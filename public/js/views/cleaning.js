@@ -1,0 +1,230 @@
+import {
+  h, icon, api, post, upload, state, isChief, section, row, statusPill, dayLabel, timeRange, TYPE, money, clear,
+  progressBar, act, toast, actionSheet, confirmAction, ago, fileSize, shortDate, timeOf, plural, avatar,
+} from '../core.js';
+import { cleaningEditor, assignSheet, problemSheet, addPurchaseSheet, progressBlock } from './shared.js';
+import { declineFlow } from './home.js';
+import { refresh, refreshSummary } from '../app.js';
+
+const PROBLEM_KIND = { breakage: ['Поломка', 'red'], forgotten: ['Забытая вещь', 'blue'], other: ['Другое', 'gray'] };
+
+export async function cleaningView({ id }) {
+  const c = await api(`/cleanings/${id}`);
+  const chief = isChief();
+  const mine = c.cleaner_id === state.me.id;
+  const canCheck = mine && c.status === 'in_progress';
+  const canReport = mine && ['in_progress', 'done'].includes(c.status);
+  const reload = () => refresh();
+
+  // ---------- шапка ----------
+  const header = h('div.card',
+    h('div.meta', { style: { justifyContent: 'space-between', marginBottom: '10px' } },
+      h('div.meta', statusPill(c), c.source === 'ical' && h('span.pill.gray', 'из бронирования')),
+      h('span.small.muted', `${TYPE[c.type]} уборка`)),
+    h('div.hero-day', dayLabel(c.date, { long: true })),
+    h('div.hero-time', timeRange(c)),
+    chief && h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginTop: '16px', paddingTop: '14px', borderTop: '.5px solid var(--sep)' } },
+      c.cleaner_id ? avatar({ name: c.cleaner_name, color: c.cleaner_color }) : h('span.avatar', { style: { background: '#C7C7CC' } }, '?'),
+      h('div', { style: { flex: 1 } },
+        h('div', { style: { fontWeight: 600 } }, c.cleaner_name || 'Не назначена'),
+        h('div.small.muted', c.status === 'declined' ? 'отказалась' : c.cleaner_id ? 'уборщица' : 'выберите уборщицу')),
+      c.status !== 'done' && h('button.btn.tinted.small', { onclick: () => assignSheet(c).then((ok) => ok && reload()) }, c.cleaner_id ? 'Сменить' : 'Назначить')),
+    h('div', { style: { marginTop: '12px' } },
+      c.start_time && kv('Выезд гостей / начало', c.start_time),
+      c.end_time && kv('Заезд новых гостей', c.end_time),
+      c.next_checkin && c.next_checkin !== c.date && kv('Следующий заезд', shortDate(c.next_checkin)),
+      (chief || mine) && kv('Оплата', money(c.pay_amount)),
+      c.started_at && kv('Начата', `${shortDate(c.started_at)}, ${timeOf(c.started_at)}`),
+      c.finished_at && kv('Завершена', `${shortDate(c.finished_at)}, ${timeOf(c.finished_at)}`),
+      chief && c.payout_id && kv('Выплата', 'выплачено')),
+    c.note && h('div.note-box', { style: { marginTop: '12px' } }, c.note),
+    c.status === 'declined' && h('div.note-box.warn', { style: { marginTop: '12px' } },
+      `${mine ? 'Вы отказались' : `${c.cleaner_name} отказалась`}${c.decline_reason ? ': ' + c.decline_reason : ''}`));
+
+  // ---------- действия ----------
+  let actions = null;
+  if (mine && c.status === 'assigned') {
+    actions = h('div.btn-row',
+      h('button.btn.plain', { onclick: (e) => declineFlow(e.currentTarget, c) }, 'Не смогу'),
+      h('button.btn.primary', { onclick: (e) => act(e.currentTarget, async () => { await post(`/cleanings/${c.id}/accept`); refreshSummary(); reload(); }, 'Уборка принята') }, 'Принять'));
+  } else if (mine && c.status === 'declined') {
+    actions = h('button.btn.tinted.block', { onclick: (e) => act(e.currentTarget, async () => { await post(`/cleanings/${c.id}/accept`); reload(); }, 'Уборка снова ваша') }, 'Всё-таки смогу');
+  } else if (mine && c.status === 'accepted') {
+    actions = h('div.stack',
+      h('button.btn.primary.block', {
+        onclick: (e) => act(e.currentTarget, async () => { await post(`/cleanings/${c.id}/start`); reload(); }, 'Уборка начата — отмечайте пункты'),
+      }, icon('play'), 'Начать уборку'),
+      h('button.btn.plain.block', { onclick: (e) => declineFlow(e.currentTarget, c) }, 'Не смогу прийти'));
+  }
+
+  // ---------- чек-лист ----------
+  const counter = h('span.small.muted');
+  const bar = progressBar(0, 1);
+  let done = c.checklist.filter((i) => i.done).length;
+  const total = c.checklist.length;
+  const finishBtn = h('button.btn.primary.block', { onclick: finish }, icon('check'), 'Завершить уборку');
+  const finishHint = h('div.small.muted', { style: { textAlign: 'center', marginTop: '10px' } });
+  const updateProgress = () => {
+    counter.textContent = `${done} из ${total}`;
+    bar.firstChild.style.width = `${total ? (done / total) * 100 : 0}%`;
+    bar.classList.toggle('green', done === total);
+    finishBtn.disabled = done < total;
+    finishHint.textContent = done < total ? `Осталось отметить ${total - done} ${plural(total - done, 'пункт', 'пункта', 'пунктов')}` : 'Всё готово! Не забудьте видео-отчёт';
+  };
+
+  const sections = [];
+  for (const item of c.checklist) {
+    let s = sections.at(-1);
+    if (!s || s.name !== item.section) sections.push((s = { name: item.section, items: [] }));
+    s.items.push(item);
+  }
+  const checkEl = (item) => {
+    const el = h('button.check', { class: [item.done ? 'done' : '', canCheck ? '' : 'readonly'].join(' ') },
+      h('span.box', icon('check')), h('span.check-text', item.text));
+    if (canCheck) {
+      el.addEventListener('click', async () => {
+        const was = !!item.done;
+        item.done = was ? 0 : 1;
+        el.classList.toggle('done', !was);
+        done += was ? -1 : 1;
+        updateProgress();
+        if (!was && navigator.vibrate) navigator.vibrate(8);
+        try { await post(`/checklist/${item.id}/toggle`); }
+        catch (e) { item.done = was ? 1 : 0; el.classList.toggle('done', was); done += was ? 1 : -1; updateProgress(); toast(e.message, true); }
+      });
+    }
+    return el;
+  };
+  updateProgress();
+
+  const checklist = section('Чек-лист', counter,
+    h('div', { style: { margin: '0 4px 14px' } }, bar),
+    mine && ['assigned', 'accepted'].includes(c.status) && h('div.note-box', { style: { marginBottom: '14px' } }, 'Нажмите «Начать уборку», чтобы отмечать пункты.'),
+    sections.map((s, i) => h('div', { style: { marginTop: i ? '18px' : 0 } },
+      h('div.section-caption', s.name),
+      h('div.group', s.items.map(checkEl)))));
+
+  // ---------- отчёт ----------
+  const videos = c.media.filter((m) => m.kind === 'video');
+  const photos = c.media.filter((m) => m.kind === 'photo');
+  const comment = h('textarea.textarea', { rows: 3, placeholder: 'Как прошла уборка? Что заметили?' }, c.comment || '');
+  if (canReport) {
+    comment.addEventListener('change', () => post(`/cleanings/${c.id}/comment`, { comment: comment.value }).then(() => toast('Комментарий сохранён')).catch((e) => toast(e.message, true)));
+  }
+  const prog = progressBlock();
+  const fileInput = h('input.hidden', { type: 'file', accept: 'video/*,image/*', multiple: true });
+  fileInput.addEventListener('change', async () => {
+    const files = [...fileInput.files];
+    if (!files.length) return;
+    uploadBtn.disabled = true;
+    try {
+      for (const [i, f] of files.entries()) {
+        const form = new FormData();
+        form.append('files', f);
+        await upload(`/cleanings/${c.id}/media`, form, (p, loaded, totalB) =>
+          prog.set(`${files.length > 1 ? `Файл ${i + 1} из ${files.length} · ` : ''}${fileSize(loaded)} из ${fileSize(totalB)}`, p));
+      }
+      toast('Видео загружено');
+      reload();
+    } catch (e) {
+      toast(e.message, true);
+      prog.hide();
+    } finally {
+      uploadBtn.disabled = false;
+      fileInput.value = '';
+    }
+  });
+  const uploadBtn = h('button.btn.tinted.block', { onclick: () => fileInput.click() }, icon('video'), videos.length ? 'Добавить ещё видео' : 'Загрузить видео-отчёт');
+
+  const showReport = canReport || c.media.length || c.comment || (chief && c.status === 'done');
+  const report = showReport && section('Отчёт', videos.length ? h('span.small.muted', `${videos.length} видео`) : null,
+    h('div.stack',
+      videos.map((m) => h('div',
+        m.expired
+          ? h('div.card.small.muted', { style: { textAlign: 'center' } }, icon('video'), h('div', 'Видео удалено автоматически (срок хранения истёк)'))
+          : h('div.video-wrap', h('video', { src: `/media/${m.id}`, controls: true, preload: 'metadata', playsinline: true })),
+        h('div.media-meta',
+          h('span', `${m.uploaded_by_name || ''} · ${ago(m.created_at)}${m.size ? ' · ' + fileSize(m.size) : ''}`),
+          (chief || m.uploaded_by === state.me.id) && !m.expired && h('button', { style: { color: 'var(--red)', fontSize: '13px' }, onclick: () => removeMedia(m) }, 'Удалить')))),
+      photos.length > 0 && h('div.thumbs', photos.map((m) => h('a', { href: `/media/${m.id}`, target: '_blank' }, h('img', { src: `/media/${m.id}`, loading: 'lazy', alt: '' })))),
+      !videos.length && !canReport && h('div.card.small.muted', { style: { textAlign: 'center' } }, 'Видео не прикреплено'),
+      canReport && h('div', fileInput, uploadBtn, prog.el,
+        h('div.section-foot', { style: { margin: '8px 4px 0' } }, 'Снимите все комнаты одним видео: 1–3 минуты. Загрузка продолжится, пока экран открыт.')),
+      canReport
+        ? h('div', { style: { marginTop: '6px' } }, h('div.section-caption', { style: { margin: '10px 4px 7px' } }, 'Комментарий'), comment)
+        : c.comment && h('div.card', h('div.small.muted', { style: { marginBottom: '6px' } }, 'Комментарий уборщицы'), h('div.pre', c.comment))));
+
+  const finishBlock = canCheck && h('div.section', h('div.card', finishBtn, finishHint));
+
+  async function finish() {
+    if (!videos.length && !(await confirmAction('Видео-отчёт не загружен', 'Завершить без видео', { message: 'Шефу будет проще принять уборку, если есть видео' }))) return;
+    await act(finishBtn, async () => {
+      await post(`/cleanings/${c.id}/finish`, { comment: comment.value });
+      reload();
+    }, 'Уборка завершена. Спасибо!');
+  }
+
+  async function removeMedia(m) {
+    if (!(await confirmAction('Удалить видео?', 'Удалить', { destructive: true }))) return;
+    await act(null, async () => { await api(`/media/${m.id}`, { method: 'DELETE' }); reload(); }, 'Удалено');
+  }
+
+  // ---------- проблемы и покупки по этой уборке ----------
+  const canAdd = chief || mine;
+  const problems = (c.problems.length || canAdd) && section('Проблемы', null,
+    c.problems.length > 0 && h('div.group', { style: { marginBottom: '10px' } }, c.problems.map((p) => row({
+      left: h('span.row-icon', { style: { background: `var(--${PROBLEM_KIND[p.kind][1]})` } }, icon(p.kind === 'forgotten' ? 'box' : 'alert')),
+      title: p.description,
+      sub: `${PROBLEM_KIND[p.kind][0]} · ${p.author} · ${p.status === 'open' ? 'открыта' : 'решена'}`,
+      chevron: true,
+      onclick: () => (location.hash = '#/problems'),
+    }))),
+    canAdd && c.status !== 'cancelled' && h('div.btn-row',
+      h('button.btn.plain', { onclick: () => problemSheet({ cleaningId: c.id }).then((ok) => ok && reload()) }, icon('alert'), 'Проблема'),
+      h('button.btn.plain', { onclick: () => addPurchaseSheet({ cleaningId: c.id }).then((ok) => ok && reload()) }, icon('cart'), 'Докупить')));
+
+  const purchases = c.purchases.length > 0 && section('Докупить', h('a.section-link', { href: '#/purchases' }, 'Весь список'),
+    h('div.group', c.purchases.map((p) => row({
+      icon: 'cart', iconBg: p.status === 'bought' ? 'var(--green)' : 'var(--accent)',
+      title: p.title, sub: p.status === 'bought' ? 'куплено' : `добавила ${p.author}`,
+    }))));
+
+  // ---------- меню шефа ----------
+  const menuBtn = chief && h('button.icon-btn', {
+    'aria-label': 'Действия',
+    onclick: async () => {
+      const opts = [{ text: 'Изменить', value: 'edit' }];
+      if (!['done', 'cancelled'].includes(c.status)) opts.push({ text: 'Отменить уборку', value: 'cancel', destructive: true });
+      if (c.status === 'cancelled') opts.push({ text: 'Восстановить', value: 'restore' });
+      if (!c.payout_id) opts.push({ text: 'Удалить навсегда', value: 'delete', destructive: true });
+      const v = await actionSheet({ title: `${TYPE[c.type]} уборка · ${dayLabel(c.date)}`, actions: opts });
+      if (v === 'edit') { if (await cleaningEditor({ cleaning: c })) reload(); }
+      if (v === 'restore') { await act(null, () => api(`/cleanings/${c.id}`, { method: 'PATCH', body: {} }), 'Восстановлено'); reload(); }
+      if (v === 'cancel' && await confirmAction('Отменить уборку?', 'Отменить уборку', { destructive: true, message: c.cleaner_id ? `${c.cleaner_name} получит уведомление` : '' })) {
+        await act(null, () => post(`/cleanings/${c.id}/cancel`), 'Уборка отменена'); reload();
+      }
+      if (v === 'delete' && await confirmAction('Удалить уборку?', 'Удалить', { destructive: true, message: 'Отчёт и видео тоже удалятся' })) {
+        await act(null, () => api(`/cleanings/${c.id}`, { method: 'DELETE' }), 'Удалено');
+        history.back();
+      }
+    },
+  }, icon('more'));
+
+  return {
+    title: `${TYPE[c.type]} уборка`,
+    back: '#/calendar',
+    large: false,
+    actions: [menuBtn],
+    content: [
+      header,
+      actions && h('div.section', actions),
+      checklist,
+      report,
+      finishBlock,
+      problems,
+      purchases,
+    ],
+  };
+}
+
+const kv = (k, v) => h('div.kv', h('span.k', k), h('span.v', v));

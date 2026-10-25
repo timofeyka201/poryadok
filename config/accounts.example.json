@@ -1,0 +1,5 @@
+[
+  { "login": "shef",  "name": "Шеф",   "role": "chief",   "password": "shef2026" },
+  { "login": "anna",  "name": "Анна",  "role": "cleaner", "password": "anna2026",  "color": "#8E1B33" },
+  { "login": "maria", "name": "Мария", "role": "cleaner", "password": "maria2026", "color": "#1F6FEB" }
+]

@@ -1,0 +1,463 @@
+import express from 'express';
+import multer from 'multer';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  all, get, run, tx, getSetting, setSetting, hashPassword, checkPassword, today, nowStr, UPLOAD_DIR,
+} from './db.js';
+import { login, logout, requireAuth, requireChief } from './auth.js';
+import { notify, chiefIds, cleanerIds, saveSubscription, vapidPublicKey } from './notify.js';
+import { createCleaning, fillChecklist, describe, TYPE_LABEL } from './cleanings.js';
+import { syncIcal } from './ical.js';
+
+export const api = express.Router();
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (req, file, cb) => cb(null, crypto.randomBytes(12).toString('hex') + path.extname(file.originalname || '').toLowerCase()),
+  }),
+  limits: { fileSize: 4 * 1024 ** 3 },
+  fileFilter: (req, file, cb) => cb(null, /^(video|image)\//.test(file.mimetype)),
+});
+
+class HttpError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+const fail = (status, message) => { throw new HttpError(status, message); };
+// Express 5 сам ловит ошибки из async-обработчиков
+const isChief = (req) => req.user.role === 'chief';
+
+function saveMedia(files, ownerType, ownerId, userId) {
+  for (const f of files || []) {
+    run(`INSERT INTO media(owner_type, owner_id, kind, filename, original_name, mime, size, uploaded_by)
+         VALUES(?,?,?,?,?,?,?,?)`,
+      ownerType, ownerId, f.mimetype.startsWith('video/') ? 'video' : 'photo',
+      f.filename, Buffer.from(f.originalname, 'latin1').toString('utf8'), f.mimetype, f.size, userId);
+  }
+}
+const mediaOf = (type, id) => all(
+  `SELECT m.id, m.kind, m.original_name, m.size, m.mime, m.expired, m.created_at, m.uploaded_by, u.name AS uploaded_by_name
+   FROM media m LEFT JOIN users u ON u.id = m.uploaded_by
+   WHERE owner_type = ? AND owner_id = ? ORDER BY m.id`, type, id);
+
+// ================= auth =================
+api.post('/login', login);
+api.post('/logout', logout);
+api.use(requireAuth);
+
+api.get('/me', (req, res) => {
+  const apartment = getSetting('apartment');
+  const users = all('SELECT id, name, role, color, active FROM users ORDER BY role, name');
+  res.json({ user: req.user, apartment, users, vapidPublicKey, today: today() });
+});
+
+api.get('/summary', (req, res) => {
+  const u = req.user;
+  const out = {
+    unread: get('SELECT COUNT(*) n FROM notifications WHERE user_id = ? AND read = 0', u.id).n,
+    purchases: get("SELECT COUNT(*) n FROM purchases WHERE status = 'needed'").n,
+    problems: get("SELECT COUNT(*) n FROM problems WHERE status = 'open'").n,
+  };
+  if (u.role === 'cleaner') {
+    out.pending = get("SELECT COUNT(*) n FROM cleanings WHERE cleaner_id = ? AND status = 'assigned'", u.id).n;
+  } else {
+    out.attention = get(`SELECT COUNT(*) n FROM cleanings WHERE status IN ('unassigned','declined') AND date >= ?`, today()).n;
+  }
+  res.json(out);
+});
+
+// ================= cleanings =================
+const CLEANING_SELECT = `
+  SELECT c.*, u.name AS cleaner_name, u.color AS cleaner_color,
+    (SELECT COUNT(*) FROM checklist_items WHERE cleaning_id = c.id) AS total_items,
+    (SELECT COUNT(*) FROM checklist_items WHERE cleaning_id = c.id AND done = 1) AS done_items,
+    (SELECT COUNT(*) FROM media WHERE owner_type = 'cleaning' AND owner_id = c.id AND kind = 'video') AS videos
+  FROM cleanings c LEFT JOIN users u ON u.id = c.cleaner_id`;
+
+function loadCleaning(req, id) {
+  const c = get(`${CLEANING_SELECT} WHERE c.id = ?`, id);
+  if (!c) fail(404, 'Уборка не найдена');
+  if (!isChief(req) && c.cleaner_id !== req.user.id) fail(403, 'Эта уборка назначена не вам');
+  return c;
+}
+
+api.get('/cleanings', (req, res) => {
+  const { from = '0000-00-00', to = '9999-99-99', status } = req.query;
+  const where = ['c.date BETWEEN ? AND ?'];
+  const params = [from, to];
+  if (!isChief(req)) { where.push('c.cleaner_id = ?'); params.push(req.user.id); }
+  if (status) { where.push(`c.status IN (${status.split(',').map(() => '?').join(',')})`); params.push(...status.split(',')); }
+  res.json(all(`${CLEANING_SELECT} WHERE ${where.join(' AND ')} ORDER BY c.date, c.start_time`, ...params));
+});
+
+api.get('/cleanings/:id', (req, res) => {
+  const c = loadCleaning(req, req.params.id);
+  c.checklist = all('SELECT * FROM checklist_items WHERE cleaning_id = ? ORDER BY position', c.id);
+  c.media = mediaOf('cleaning', c.id);
+  c.problems = all(`SELECT p.*, u.name AS author FROM problems p JOIN users u ON u.id = p.created_by
+                    WHERE cleaning_id = ? ORDER BY p.id DESC`, c.id);
+  c.purchases = all(`SELECT p.*, u.name AS author FROM purchases p JOIN users u ON u.id = p.created_by
+                     WHERE cleaning_id = ? ORDER BY p.id DESC`, c.id);
+  res.json(c);
+});
+
+api.post('/cleanings', requireChief, (req, res) => {
+  const b = req.body;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.date || '')) fail(400, 'Укажите дату');
+  const c = tx(() => createCleaning({ ...b, cleaner_id: b.cleaner_id ? +b.cleaner_id : null }));
+  if (c.cleaner_id) notify(c.cleaner_id, 'Новая уборка', `${TYPE_LABEL[c.type]} · ${describe(c)}`, `#/cleaning/${c.id}`);
+  res.json(c);
+});
+
+api.patch('/cleanings/:id', requireChief, (req, res) => {
+  const c = loadCleaning(req, req.params.id);
+  const b = req.body;
+  const next = {
+    date: b.date ?? c.date,
+    start_time: b.start_time !== undefined ? b.start_time || null : c.start_time,
+    end_time: b.end_time !== undefined ? b.end_time || null : c.end_time,
+    type: b.type ?? c.type,
+    note: b.note !== undefined ? b.note || null : c.note,
+    pay_amount: b.pay_amount !== undefined ? Math.round(+b.pay_amount || 0) : c.pay_amount,
+    cleaner_id: b.cleaner_id !== undefined ? (b.cleaner_id ? +b.cleaner_id : null) : c.cleaner_id,
+  };
+  const reassigned = next.cleaner_id !== c.cleaner_id;
+  let status = c.status;
+  if (reassigned || c.status === 'cancelled') status = next.cleaner_id ? 'assigned' : 'unassigned';
+  tx(() => {
+    run(`UPDATE cleanings SET date=?, start_time=?, end_time=?, type=?, note=?, pay_amount=?, cleaner_id=?, status=?,
+         decline_reason = CASE WHEN ? THEN NULL ELSE decline_reason END, reminded = CASE WHEN ? THEN 0 ELSE reminded END
+         WHERE id = ?`,
+      next.date, next.start_time, next.end_time, next.type, next.note, next.pay_amount, next.cleaner_id, status,
+      reassigned ? 1 : 0, reassigned || next.date !== c.date ? 1 : 0, c.id);
+    if (next.type !== c.type && !['in_progress', 'done'].includes(c.status)) fillChecklist(c.id, next.type);
+  });
+  const updated = { ...c, ...next };
+  if (reassigned) {
+    if (c.cleaner_id && c.status !== 'declined') notify(c.cleaner_id, 'Уборка снята с вас', describe(c), '#/');
+    if (next.cleaner_id) notify(next.cleaner_id, 'Новая уборка', `${TYPE_LABEL[next.type]} · ${describe(updated)}`, `#/cleaning/${c.id}`);
+  } else if (next.cleaner_id && (next.date !== c.date || next.start_time !== c.start_time || next.type !== c.type || next.note !== c.note)) {
+    notify(next.cleaner_id, 'Уборка изменена', `${TYPE_LABEL[next.type]} · ${describe(updated)}`, `#/cleaning/${c.id}`);
+  }
+  res.json({ ok: true });
+});
+
+api.post('/cleanings/:id/cancel', requireChief, (req, res) => {
+  const c = loadCleaning(req, req.params.id);
+  if (c.status === 'done') fail(400, 'Уборка уже завершена');
+  run("UPDATE cleanings SET status = 'cancelled' WHERE id = ?", c.id);
+  if (c.cleaner_id) notify(c.cleaner_id, 'Уборка отменена', describe(c), `#/cleaning/${c.id}`);
+  res.json({ ok: true });
+});
+
+api.delete('/cleanings/:id', requireChief, (req, res) => {
+  const c = loadCleaning(req, req.params.id);
+  if (c.payout_id) fail(400, 'Уборка уже входит в выплату — её нельзя удалить');
+  for (const m of all("SELECT filename FROM media WHERE owner_type = 'cleaning' AND owner_id = ?", c.id)) {
+    fs.rm(path.join(UPLOAD_DIR, m.filename), { force: true }, () => {});
+  }
+  tx(() => {
+    run("DELETE FROM media WHERE owner_type = 'cleaning' AND owner_id = ?", c.id);
+    run('DELETE FROM cleanings WHERE id = ?', c.id);
+  });
+  res.json({ ok: true });
+});
+
+// ----- действия уборщицы -----
+function ownCleaning(req, id = req.params.id) {
+  const c = loadCleaning(req, id);
+  if (c.cleaner_id !== req.user.id) fail(403, 'Эта уборка назначена не вам');
+  return c;
+}
+
+api.post('/cleanings/:id/accept', (req, res) => {
+  const c = ownCleaning(req);
+  if (!['assigned', 'declined'].includes(c.status)) fail(400, 'Уборку нельзя принять в текущем статусе');
+  run("UPDATE cleanings SET status = 'accepted', decline_reason = NULL WHERE id = ?", c.id);
+  notify(chiefIds(), `${req.user.name} приняла уборку`, describe(c), `#/cleaning/${c.id}`);
+  res.json({ ok: true });
+});
+
+api.post('/cleanings/:id/decline', (req, res) => {
+  const c = ownCleaning(req);
+  if (!['assigned', 'accepted'].includes(c.status)) fail(400, 'Уборку нельзя отклонить в текущем статусе');
+  const reason = String(req.body.reason || '').trim();
+  run("UPDATE cleanings SET status = 'declined', decline_reason = ? WHERE id = ?", reason || null, c.id);
+  notify(chiefIds(), `${req.user.name} отказалась от уборки`, `${describe(c)}${reason ? ' — ' + reason : ''}. Назначьте другую уборщицу.`, `#/cleaning/${c.id}`);
+  res.json({ ok: true });
+});
+
+api.post('/cleanings/:id/start', (req, res) => {
+  const c = ownCleaning(req);
+  if (!['assigned', 'accepted'].includes(c.status)) fail(400, 'Уборку нельзя начать в текущем статусе');
+  run("UPDATE cleanings SET status = 'in_progress', started_at = ? WHERE id = ?", nowStr(), c.id);
+  notify(chiefIds(), `${req.user.name} начала уборку`, describe(c), `#/cleaning/${c.id}`);
+  res.json({ ok: true });
+});
+
+api.post('/cleanings/:id/finish', (req, res) => {
+  const c = ownCleaning(req);
+  if (c.status !== 'in_progress') fail(400, 'Сначала начните уборку');
+  if (c.done_items < c.total_items) fail(400, 'Отметьте все пункты чек-листа');
+  const comment = req.body.comment !== undefined ? String(req.body.comment).trim() || null : c.comment;
+  run("UPDATE cleanings SET status = 'done', finished_at = ?, comment = ? WHERE id = ?", nowStr(), comment, c.id);
+  notify(chiefIds(), `${req.user.name} закончила уборку`,
+    `${describe(c)} · видео: ${c.videos}${comment ? ' · есть комментарий' : ''}`, `#/cleaning/${c.id}`);
+  res.json({ ok: true });
+});
+
+api.post('/cleanings/:id/comment', (req, res) => {
+  const c = ownCleaning(req);
+  run('UPDATE cleanings SET comment = ? WHERE id = ?', String(req.body.comment || '').trim() || null, c.id);
+  res.json({ ok: true });
+});
+
+api.post('/checklist/:itemId/toggle', (req, res) => {
+  const item = get('SELECT * FROM checklist_items WHERE id = ?', req.params.itemId);
+  if (!item) fail(404, 'Пункт не найден');
+  const c = ownCleaning(req, item.cleaning_id);
+  if (c.status !== 'in_progress') fail(400, 'Нажмите «Начать уборку», чтобы отмечать пункты');
+  const done = item.done ? 0 : 1;
+  run('UPDATE checklist_items SET done = ?, done_at = ? WHERE id = ?', done, done ? nowStr() : null, item.id);
+  res.json({ done });
+});
+
+api.post('/cleanings/:id/media', upload.array('files', 10), (req, res) => {
+  const c = ownCleaning(req);
+  if (!req.files?.length) fail(400, 'Можно загружать только видео и фото');
+  saveMedia(req.files, 'cleaning', c.id, req.user.id);
+  if (c.status === 'done') notify(chiefIds(), `${req.user.name} добавила видео к отчёту`, describe(c), `#/cleaning/${c.id}`);
+  res.json({ ok: true });
+});
+
+// ================= media =================
+api.delete('/media/:id', (req, res) => {
+  const m = get('SELECT * FROM media WHERE id = ?', req.params.id);
+  if (!m) fail(404, 'Файл не найден');
+  if (!isChief(req) && m.uploaded_by !== req.user.id) fail(403, 'Можно удалять только свои файлы');
+  fs.rm(path.join(UPLOAD_DIR, m.filename), { force: true }, () => {});
+  run('DELETE FROM media WHERE id = ?', m.id);
+  res.json({ ok: true });
+});
+
+// ================= purchases =================
+const PURCHASE_SELECT = `
+  SELECT p.*, a.name AS author, b.name AS buyer,
+    (SELECT id FROM media WHERE owner_type = 'purchase' AND owner_id = p.id LIMIT 1) AS receipt_id
+  FROM purchases p JOIN users a ON a.id = p.created_by LEFT JOIN users b ON b.id = p.bought_by`;
+
+api.get('/purchases', (req, res) => {
+  const status = req.query.status || 'needed';
+  const order = status === 'needed' ? 'p.created_at DESC' : 'p.bought_at DESC';
+  res.json(all(`${PURCHASE_SELECT} WHERE p.status = ? ORDER BY ${order} LIMIT 200`, status));
+});
+
+api.post('/purchases', (req, res) => {
+  const title = String(req.body.title || '').trim();
+  if (!title) fail(400, 'Что нужно купить?');
+  const r = run('INSERT INTO purchases(title, note, created_by, cleaning_id) VALUES(?,?,?,?)',
+    title, String(req.body.note || '').trim() || null, req.user.id, req.body.cleaning_id || null);
+  const others = [...cleanerIds(), ...chiefIds()].filter((id) => id !== req.user.id);
+  notify(others, 'Нужно докупить', `${title} — добавила ${req.user.name}`, '#/purchases');
+  res.json({ id: Number(r.lastInsertRowid) });
+});
+
+api.post('/purchases/:id/bought', upload.single('receipt'), (req, res) => {
+  const p = get('SELECT * FROM purchases WHERE id = ?', req.params.id);
+  if (!p || p.status !== 'needed') fail(400, 'Покупка уже отмечена');
+  const amount = Math.max(0, Math.round(+req.body.amount || 0));
+  tx(() => {
+    run("UPDATE purchases SET status = 'bought', bought_by = ?, bought_at = ?, amount = ? WHERE id = ?",
+      req.user.id, nowStr(), amount || null, p.id);
+    if (req.file) saveMedia([req.file], 'purchase', p.id, req.user.id);
+  });
+  if (!isChief(req)) notify(chiefIds(), `${req.user.name} купила: ${p.title}`, amount ? `${amount} ₽ — к компенсации` : '', '#/purchases');
+  res.json({ ok: true });
+});
+
+api.post('/purchases/:id/restore', (req, res) => {
+  const p = get('SELECT * FROM purchases WHERE id = ?', req.params.id);
+  if (!p) fail(404, 'Не найдено');
+  if (p.payout_id) fail(400, 'Покупка уже компенсирована');
+  if (!isChief(req) && p.bought_by !== req.user.id) fail(403, 'Можно вернуть только свою покупку');
+  run("UPDATE purchases SET status = 'needed', bought_by = NULL, bought_at = NULL, amount = NULL WHERE id = ?", p.id);
+  res.json({ ok: true });
+});
+
+api.delete('/purchases/:id', (req, res) => {
+  const p = get('SELECT * FROM purchases WHERE id = ?', req.params.id);
+  if (!p) fail(404, 'Не найдено');
+  if (p.payout_id) fail(400, 'Покупка уже компенсирована');
+  if (!isChief(req) && p.created_by !== req.user.id) fail(403, 'Можно удалять только свои пункты');
+  run('DELETE FROM purchases WHERE id = ?', p.id);
+  res.json({ ok: true });
+});
+
+// ================= problems =================
+api.get('/problems', (req, res) => {
+  const status = req.query.status || 'open';
+  const rows = all(`SELECT p.*, u.name AS author, c.date AS cleaning_date FROM problems p
+    JOIN users u ON u.id = p.created_by LEFT JOIN cleanings c ON c.id = p.cleaning_id
+    WHERE p.status = ? ORDER BY p.id DESC LIMIT 200`, status);
+  for (const r of rows) r.media = mediaOf('problem', r.id);
+  res.json(rows);
+});
+
+api.post('/problems', upload.array('photos', 10), (req, res) => {
+  const kind = ['breakage', 'forgotten', 'other'].includes(req.body.kind) ? req.body.kind : 'other';
+  const description = String(req.body.description || '').trim();
+  if (!description) fail(400, 'Опишите проблему');
+  const id = tx(() => {
+    const r = run('INSERT INTO problems(kind, description, cleaning_id, created_by) VALUES(?,?,?,?)',
+      kind, description, req.body.cleaning_id || null, req.user.id);
+    const id = Number(r.lastInsertRowid);
+    saveMedia(req.files, 'problem', id, req.user.id);
+    return id;
+  });
+  const label = { breakage: 'Поломка', forgotten: 'Гости забыли вещь', other: 'Проблема' }[kind];
+  notify(chiefIds().filter((x) => x !== req.user.id), `${label}: сообщила ${req.user.name}`, description.slice(0, 120), '#/problems');
+  res.json({ id });
+});
+
+api.post('/problems/:id/resolve', requireChief, (req, res) => {
+  const p = get('SELECT * FROM problems WHERE id = ?', req.params.id);
+  if (!p) fail(404, 'Не найдено');
+  const resolution = String(req.body.resolution || '').trim() || null;
+  run("UPDATE problems SET status = 'resolved', resolution = ?, resolved_at = ? WHERE id = ?", resolution, nowStr(), p.id);
+  if (p.created_by !== req.user.id) notify(p.created_by, 'Проблема решена', `${p.description.slice(0, 80)}${resolution ? ' — ' + resolution : ''}`, '#/problems');
+  res.json({ ok: true });
+});
+
+api.post('/problems/:id/reopen', requireChief, (req, res) => {
+  run("UPDATE problems SET status = 'open', resolution = NULL, resolved_at = NULL WHERE id = ?", req.params.id);
+  res.json({ ok: true });
+});
+
+// ================= money =================
+function balanceOf(cleanerId) {
+  const cleanings = all(`SELECT id, date, type, pay_amount FROM cleanings
+    WHERE cleaner_id = ? AND status = 'done' AND payout_id IS NULL ORDER BY date`, cleanerId);
+  const purchases = all(`SELECT id, title, amount, bought_at FROM purchases
+    WHERE bought_by = ? AND status = 'bought' AND amount > 0 AND payout_id IS NULL ORDER BY bought_at`, cleanerId);
+  const cleanings_sum = cleanings.reduce((s, c) => s + c.pay_amount, 0);
+  const purchases_sum = purchases.reduce((s, p) => s + p.amount, 0);
+  return { cleanings, purchases, cleanings_sum, purchases_sum, total: cleanings_sum + purchases_sum };
+}
+
+function monthStats(cleanerId) {
+  const month = today().slice(0, 7);
+  return get(`SELECT COUNT(*) AS count, COALESCE(SUM(pay_amount), 0) AS earned FROM cleanings
+    WHERE cleaner_id = ? AND status = 'done' AND substr(date, 1, 7) = ?`, cleanerId, month);
+}
+
+api.get('/money', (req, res) => {
+  const ids = isChief(req)
+    ? all("SELECT id FROM users WHERE role = 'cleaner' AND active = 1 ORDER BY name").map((u) => u.id)
+    : [req.user.id];
+  const people = ids.map((id) => ({
+    ...get('SELECT id, name, color FROM users WHERE id = ?', id),
+    balance: balanceOf(id),
+    month: monthStats(id),
+  }));
+  const payouts = all(`SELECT p.*, u.name FROM payouts p JOIN users u ON u.id = p.cleaner_id
+    ${isChief(req) ? '' : 'WHERE p.cleaner_id = ' + Number(req.user.id)} ORDER BY p.id DESC LIMIT 50`);
+  res.json({ people, payouts });
+});
+
+api.post('/payouts', requireChief, (req, res) => {
+  const cleanerId = +req.body.cleaner_id;
+  const b = balanceOf(cleanerId);
+  if (!b.total) fail(400, 'Нечего выплачивать');
+  tx(() => {
+    const r = run('INSERT INTO payouts(cleaner_id, amount, cleanings_sum, purchases_sum, note) VALUES(?,?,?,?,?)',
+      cleanerId, b.total, b.cleanings_sum, b.purchases_sum, req.body.note || null);
+    const id = Number(r.lastInsertRowid);
+    for (const c of b.cleanings) run('UPDATE cleanings SET payout_id = ? WHERE id = ?', id, c.id);
+    for (const p of b.purchases) run('UPDATE purchases SET payout_id = ? WHERE id = ?', id, p.id);
+  });
+  notify(cleanerId, 'Выплата', `${b.total.toLocaleString('ru-RU')} ₽: уборки ${b.cleanings.length} шт.${b.purchases_sum ? `, покупки ${b.purchases_sum} ₽` : ''}`, '#/money');
+  res.json({ ok: true });
+});
+
+// ================= notifications & push =================
+api.get('/notifications', (req, res) => {
+  res.json(all('SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT 60', req.user.id));
+});
+api.post('/notifications/read', (req, res) => {
+  run('UPDATE notifications SET read = 1 WHERE user_id = ?', req.user.id);
+  res.json({ ok: true });
+});
+api.post('/push/subscribe', (req, res) => {
+  if (!req.body?.endpoint) fail(400, 'Нет подписки');
+  saveSubscription(req.user.id, req.body);
+  res.json({ ok: true });
+});
+
+// ================= team =================
+api.get('/users', requireChief, (req, res) => {
+  res.json(all(`SELECT id, login, name, role, color, active, created_at,
+    (SELECT COUNT(*) FROM cleanings WHERE cleaner_id = users.id AND status = 'done') AS done_count
+    FROM users ORDER BY role, active DESC, name`));
+});
+
+api.post('/users', requireChief, (req, res) => {
+  const login = String(req.body.login || '').trim().toLowerCase();
+  const name = String(req.body.name || '').trim();
+  const password = String(req.body.password || '');
+  if (!/^[a-z0-9._-]{3,}$/.test(login)) fail(400, 'Логин: от 3 символов, латиница и цифры');
+  if (!name) fail(400, 'Укажите имя');
+  if (password.length < 6) fail(400, 'Пароль: минимум 6 символов');
+  if (get('SELECT id FROM users WHERE login = ?', login)) fail(400, 'Такой логин уже есть');
+  run("INSERT INTO users(login, name, role, pass_hash, color) VALUES(?,?,'cleaner',?,?)",
+    login, name, hashPassword(password), req.body.color || '#8E1B33');
+  res.json({ ok: true });
+});
+
+api.patch('/users/:id', requireChief, (req, res) => {
+  const u = get('SELECT * FROM users WHERE id = ?', req.params.id);
+  if (!u) fail(404, 'Не найдено');
+  const b = req.body;
+  if (b.password !== undefined && String(b.password).length < 6) fail(400, 'Пароль: минимум 6 символов');
+  if (b.active === false && u.id === req.user.id) fail(400, 'Нельзя отключить свой аккаунт');
+  run('UPDATE users SET name = ?, color = ?, active = ? WHERE id = ?',
+    String(b.name ?? u.name).trim() || u.name, b.color ?? u.color, b.active === undefined ? u.active : b.active ? 1 : 0, u.id);
+  if (b.password) run('UPDATE users SET pass_hash = ? WHERE id = ?', hashPassword(String(b.password)), u.id);
+  if (b.active === false || b.password) run('DELETE FROM sessions WHERE user_id = ? AND user_id != ?', u.id, req.user.id);
+  res.json({ ok: true });
+});
+
+api.post('/me/password', (req, res) => {
+  const u = get('SELECT * FROM users WHERE id = ?', req.user.id);
+  if (!checkPassword(String(req.body.current || ''), u.pass_hash)) fail(400, 'Текущий пароль неверный');
+  if (String(req.body.password || '').length < 6) fail(400, 'Пароль: минимум 6 символов');
+  run('UPDATE users SET pass_hash = ? WHERE id = ?', hashPassword(String(req.body.password)), u.id);
+  res.json({ ok: true });
+});
+
+// ================= settings =================
+const SETTINGS_KEYS = ['apartment', 'times', 'rates', 'templates', 'ical', 'ical_status', 'video_retention_days'];
+
+api.get('/settings', requireChief, (req, res) => {
+  res.json(Object.fromEntries(SETTINGS_KEYS.map((k) => [k, getSetting(k)])));
+});
+
+api.put('/settings', requireChief, (req, res) => {
+  for (const k of SETTINGS_KEYS) {
+    if (k !== 'ical_status' && req.body[k] !== undefined) setSetting(k, req.body[k]);
+  }
+  res.json({ ok: true });
+});
+
+api.post('/ical/sync', requireChief, async (req, res) => {
+  res.json(await syncIcal());
+});
+
+// ================= errors =================
+api.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) return res.status(400).json({ error: err.code === 'LIMIT_FILE_SIZE' ? 'Файл слишком большой' : err.message });
+  if (err.status) return res.status(err.status).json({ error: err.message });
+  console.error(err);
+  res.status(500).json({ error: 'Ошибка сервера' });
+});

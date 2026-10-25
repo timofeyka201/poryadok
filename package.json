@@ -1,0 +1,19 @@
+{
+  "name": "poryadok",
+  "version": "1.0.0",
+  "description": "Сервис для управления уборками посуточной квартиры",
+  "private": true,
+  "type": "module",
+  "main": "server/index.js",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --no-warnings server/index.js",
+    "demo": "node --no-warnings scripts/demo.js"
+  },
+  "dependencies": {
+    "cookie-parser": "^1.4.7",
+    "express": "^5.1.0",
+    "multer": "^2.0.2",
+    "web-push": "^3.6.7"
+  }
+}
