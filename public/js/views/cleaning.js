@@ -2,6 +2,7 @@ import {
   h, icon, api, post, upload, state, isChief, section, row, statusPill, dayLabel, timeRange, TYPE, money, clear,
   progressBar, act, toast, actionSheet, confirmAction, ago, fileSize, shortDate, timeOf, plural, avatar, compressImage,
 } from '../core.js';
+import { compressVideo, canCompressVideo, keepAwake } from '../video-compress.js';
 import { cleaningEditor, assignSheet, problemSheet, addPurchaseSheet, progressBlock, accessBox, ratingStars } from './shared.js';
 import { declineFlow } from './home.js';
 import { refresh, refreshSummary } from '../app.js';
@@ -185,23 +186,43 @@ export async function cleaningView({ id }) {
     const files = [...fileInput.files];
     if (!files.length) return;
     uploadBtn.disabled = true;
+    const release = await keepAwake();
+    const saved = [];
     try {
-      for (const [i, f] of files.entries()) {
+      for (const [i, original] of files.entries()) {
+        const prefix = files.length > 1 ? `Файл ${i + 1} из ${files.length} · ` : '';
+        let f = original;
+        if (original.type.startsWith('video/')) {
+          // сначала сжимаем на телефоне; «Отправить без сжатия» — если устройство справляется медленно
+          const signal = {};
+          skipBtn.onclick = () => signal.cancel?.();
+          skipBtn.classList.toggle('hidden', !canCompressVideo());
+          prog.set(`${prefix}Подготовка видео…`, 0);
+          const r = await compressVideo(original, { signal, onProgress: (p) => prog.set(`${prefix}Сжатие видео`, p) });
+          skipBtn.classList.add('hidden');
+          f = r.file;
+          if (r.compressed) saved.push(`${fileSize(r.originalSize)} → ${fileSize(f.size)}${r.audioDropped ? ', без звука' : ''}`);
+        } else if (original.type.startsWith('image/')) {
+          f = await compressImage(original);
+        }
         const form = new FormData();
         form.append('files', f);
         await upload(`/cleanings/${c.id}/media`, form, (p, loaded, totalB) =>
-          prog.set(`${files.length > 1 ? `Файл ${i + 1} из ${files.length} · ` : ''}${fileSize(loaded)} из ${fileSize(totalB)}`, p));
+          prog.set(`${prefix}Загрузка ${fileSize(loaded)} из ${fileSize(totalB)}`, p));
       }
-      toast('Видео загружено');
+      toast(saved.length ? `Загружено. Видео сжато: ${saved.join('; ')}` : 'Загружено');
       reload();
     } catch (e) {
       toast(e.message, true);
       prog.hide();
     } finally {
+      release();
+      skipBtn.classList.add('hidden');
       uploadBtn.disabled = false;
       fileInput.value = '';
     }
   });
+  const skipBtn = h('button.btn.plain.small.hidden', { style: { marginTop: '10px' } }, 'Отправить без сжатия');
   const uploadBtn = h('button.btn.tinted.block', { onclick: () => fileInput.click() }, icon('video'), videos.length ? 'Добавить ещё видео' : 'Загрузить видео-отчёт');
 
   const showReport = canReport || c.media.length || c.comment || (chief && c.status === 'done');
@@ -216,8 +237,9 @@ export async function cleaningView({ id }) {
           (chief || m.uploaded_by === state.me.id) && !m.expired && h('button', { style: { color: 'var(--red)', fontSize: '13px' }, onclick: () => removeMedia(m) }, 'Удалить')))),
       photos.length > 0 && h('div.thumbs', photos.map((m) => h('a', { href: `/media/${m.id}`, target: '_blank' }, h('img', { src: `/media/${m.id}`, loading: 'lazy', alt: '' })))),
       !videos.length && !canReport && h('div.card.small.muted', { style: { textAlign: 'center' } }, 'Видео не прикреплено'),
-      canReport && h('div', fileInput, uploadBtn, prog.el,
-        h('div.section-foot', { style: { margin: '8px 4px 0' } }, 'Снимите все комнаты одним видео: 1–3 минуты. Загрузка продолжится, пока экран открыт.')),
+      canReport && h('div', fileInput, uploadBtn, prog.el, skipBtn,
+        h('div.section-foot', { style: { margin: '8px 4px 0' } },
+          'Снимите все комнаты одним видео: 1–3 минуты. Перед отправкой видео сжимается на телефоне — не закрывайте экран, пока идёт загрузка.')),
       canReport
         ? h('div', { style: { marginTop: '6px' } }, h('div.section-caption', { style: { margin: '10px 4px 7px' } }, 'Комментарий'), comment)
         : c.comment && h('div.card', h('div.small.muted', { style: { marginBottom: '6px' } }, 'Комментарий уборщицы'), h('div.pre', c.comment))));
