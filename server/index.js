@@ -29,8 +29,13 @@ app.get('/media/:id', requireAuth, (req, res) => {
 });
 
 const pub = path.join(ROOT, 'public');
-app.use(express.static(pub, { index: false, maxAge: 0 }));
-app.get(/^(?!\/api\/).*/, (req, res) => res.sendFile(path.join(pub, 'index.html')));
+// no-cache: браузер (особенно приложение с экрана «Домой» на iPhone) каждый раз сверяет файлы с сервером,
+// иначе после обновления он может смешать старые и новые модули и показать пустой экран
+app.use(express.static(pub, { index: false, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
+app.get(/^(?!\/api\/).*/, (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache');
+  res.sendFile(path.join(pub, 'index.html'));
+});
 
 const port = +process.env.PORT || 3000;
 app.listen(port, () => {

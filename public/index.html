@@ -18,6 +18,23 @@
 </head>
 <body>
   <div id="app"></div>
+  <script>
+    // если приложение не загрузилось (ошибка сети или старые файлы в кэше) — показываем кнопку «Обновить», а не белый экран
+    (function () {
+      var shown = false;
+      function fail() {
+        var app = document.getElementById('app');
+        if (shown || app.children.length) return;
+        shown = true;
+        app.innerHTML = '<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:24px;text-align:center;font-family:-apple-system,BlinkMacSystemFont,Roboto,sans-serif">'
+          + '<div style="font-size:20px;font-weight:600">Не удалось загрузить «Порядок»</div>'
+          + '<div style="color:#6E6E73;font-size:15px">Проверьте интернет и обновите страницу</div>'
+          + '<button onclick="location.reload()" style="height:48px;padding:0 28px;border:0;border-radius:14px;background:#8E1B33;color:#fff;font-size:17px;font-weight:600">Обновить</button></div>';
+      }
+      window.addEventListener('error', function () { setTimeout(fail, 1500); }, true);
+      setTimeout(fail, 10000);
+    })();
+  </script>
   <script type="module" src="/js/app.js"></script>
 </body>
 </html>
