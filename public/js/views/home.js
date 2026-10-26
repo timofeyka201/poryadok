@@ -3,7 +3,7 @@ import {
   emptyState, progressBar, todayYmd, addDays, act, plural, sheet, field, toast, clear, ago, timeOf, shortDate, STATUS,
   confirmAction,
 } from '../core.js';
-import { cleaningRow, reportRow, cleaningEditor, assignSheet, pushBanner, apartmentCard, problemSheet, addPurchaseSheet } from './shared.js';
+import { cleaningRow, reportRow, cleaningEditor, assignSheet, assignSuggested, accessBox, pushBanner, apartmentCard, problemSheet, addPurchaseSheet } from './shared.js';
 import { refresh, refreshSummary } from '../app.js';
 
 export async function homeView() {
@@ -21,6 +21,10 @@ async function cleanerHome() {
   const pending = active.filter((c) => c.status === 'assigned');
   const next = active.find((c) => c.status === 'in_progress') || active.find((c) => c.status !== 'assigned') || null;
   const later = active.filter((c) => c !== next && c.status !== 'assigned').slice(0, 5);
+  // в день уборки — код доступа прямо на главной
+  if (next && next.date === t && ['accepted', 'in_progress'].includes(next.status)) {
+    next.access = (await api(`/cleanings/${next.id}`).catch(() => ({}))).access;
+  }
   const name = state.me.name.split(' ')[0];
 
   return {
@@ -78,6 +82,7 @@ function nextCard(c) {
       h('div.small.muted', { style: { marginBottom: '6px' } }, `Чек-лист: ${c.done_items} из ${c.total_items}`),
       progressBar(c.done_items, c.total_items)),
     c.note && h('div.note-box', { style: { marginTop: '12px' } }, c.note),
+    c.access && h('div', { style: { marginTop: '12px' } }, accessBox(c.access)),
     h('div', { style: { marginTop: '16px' } }, btn));
 }
 
@@ -124,10 +129,14 @@ async function chiefHome() {
         h('div.group', attention.map((c) => row({
           left: h('span.row-icon', { style: { background: c.status === 'declined' ? 'var(--red)' : 'var(--orange)' } }, icon(c.status === 'declined' ? 'x' : 'user')),
           title: `${dayLabel(c.date)}${c.start_time ? ', ' + c.start_time : ''}`,
-          sub: c.status === 'declined'
+          sub: (c.status === 'declined'
             ? `${c.cleaner_name} отказалась${c.decline_reason ? ': ' + c.decline_reason : ''}`
-            : `${TYPE[c.type]} · ${c.source === 'ical' ? 'из бронирования' : 'не назначена'}`,
-          right: h('button.btn.tinted.small', { onclick: (e) => { e.stopPropagation(); assignSheet(c).then((ok) => ok && refresh()); } }, 'Назначить'),
+            : `${TYPE[c.type]} · ${c.source === 'ical' ? 'из бронирования' : 'не назначена'}`)
+            + (c.suggested ? ` · свободна ${c.suggested.name}` : ' · свободных нет'),
+          // предложенную замену шеф подтверждает одним нажатием
+          right: c.suggested
+            ? h('button.btn.primary.small', { onclick: (e) => { e.stopPropagation(); act(e.currentTarget, () => assignSuggested(c)).then(refresh); } }, icon('check'), c.suggested.name)
+            : h('button.btn.tinted.small', { onclick: (e) => { e.stopPropagation(); assignSheet(c).then((ok) => ok && refresh()); } }, 'Назначить'),
           onclick: () => (location.hash = `#/cleaning/${c.id}`),
         })))),
 

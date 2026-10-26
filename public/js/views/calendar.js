@@ -12,6 +12,7 @@ export async function calendarView() {
   const wrap = h('div');
   const dayList = h('div', { style: { marginTop: '24px' } });
   let items = [];
+  let unavail = []; // отметки «не могу»: у уборщицы — свои, у шефа — всех
 
   const gridRange = () => {
     const [y, m] = cal.month.split('-').map(Number);
@@ -31,7 +32,10 @@ export async function calendarView() {
 
   async function load() {
     const days = gridRange();
-    items = await api(`/cleanings?from=${ymd(days[0])}&to=${ymd(days[days.length - 1])}`);
+    [items, unavail] = await Promise.all([
+      api(`/cleanings?from=${ymd(days[0])}&to=${ymd(days[days.length - 1])}`),
+      api(`/unavailability?from=${ymd(days[0])}&to=${ymd(days[days.length - 1])}`),
+    ]);
     draw();
   }
 
@@ -55,6 +59,7 @@ export async function calendarView() {
         const list = (byDay[key] || []).filter((c) => c.status !== 'cancelled');
         const cls = [
           d.getMonth() !== m - 1 && 'other', key === t && 'today', key === cal.selected && 'sel', [0, 6].includes(d.getDay()) && 'weekend',
+          !isChief() && unavail.some((x) => x.date === key) && 'off',
         ].filter(Boolean).join(' ');
         return h('button.cal-day', { class: cls, onclick: () => { cal.selected = key; if (d.getMonth() !== m - 1) { cal.month = key.slice(0, 7); load(); } else draw(); } },
           h('span.n', d.getDate()),
@@ -73,11 +78,14 @@ export async function calendarView() {
       isChief() && legend());
 
     const dayItems = byDay[cal.selected] || [];
+    const cantNames = isChief() ? unavail.filter((x) => x.date === cal.selected).map((x) => x.name) : [];
     clear(dayList, section(fullDate(cal.selected), dayItems.length ? h('span.small.muted', `${dayItems.length} ${plural(dayItems.length, 'уборка', 'уборки', 'уборок')}`) : null,
       dayItems.length
         ? h('div.group', dayItems.map((c) => cleaningRow(c)))
         : h('div.card', emptyState('calendar', 'В этот день уборок нет'),
-          isChief() && h('button.btn.tinted.block', { onclick: addForDay }, icon('plus'), 'Добавить уборку'))));
+          isChief() && h('button.btn.tinted.block', { onclick: addForDay }, icon('plus'), 'Добавить уборку')),
+      cantNames.length > 0 && h('div.section-foot', { style: { margin: '10px 4px 0' } }, icon('ban'), ` Не могут в этот день: ${cantNames.join(', ')}`),
+      !isChief() && h('button.btn.plain.block', { style: { marginTop: '14px' }, onclick: () => (location.hash = '#/availability') }, icon('ban'), 'Отметить дни, когда не могу')));
   }
 
   function legend() {

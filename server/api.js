@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  all, get, run, tx, getSetting, setSetting, hashPassword, checkPassword, today, nowStr, UPLOAD_DIR, withDb,
+  all, get, run, tx, getSetting, setSetting, hashPassword, checkPassword, today, nowStr, ymd, UPLOAD_DIR, withDb,
 } from './db.js';
 import { login, logout, requireAuth, requireChief } from './auth.js';
 import { notify, chiefIds, cleanerIds, saveSubscription, vapidPublicKey } from './notify.js';
@@ -60,6 +60,7 @@ api.use(requireAuth);
 
 api.get('/me', (req, res) => {
   const apartment = getSetting('apartment');
+  if (!isChief(req)) delete apartment.access;
   const users = all('SELECT id, name, role, color, active FROM users ORDER BY role, name');
   res.json({ user: req.user, apartment, users, vapidPublicKey, today: today() });
 });
@@ -100,11 +101,47 @@ api.get('/cleanings', (req, res) => {
   const params = [from, to];
   if (!isChief(req)) { where.push('c.cleaner_id = ?'); params.push(req.user.id); }
   if (status) { where.push(`c.status IN (${status.split(',').map(() => '?').join(',')})`); params.push(...status.split(',')); }
-  res.json(all(`${CLEANING_SELECT} WHERE ${where.join(' AND ')} ORDER BY c.date, c.start_time`, ...params));
+  const rows = all(`${CLEANING_SELECT} WHERE ${where.join(' AND ')} ORDER BY c.date, c.start_time`, ...params);
+  if (isChief(req)) {
+    for (const c of rows) {
+      if (['unassigned', 'declined'].includes(c.status) && c.date >= today()) c.suggested = candidatesFor(c).find((x) => x.suggested) || null;
+    }
+  }
+  res.json(rows);
+});
+
+/**
+ * Кто может взять уборку: свободна в этот день, нет другой уборки, не отказывалась от этой.
+ * Первой предлагаем ту, у кого меньше уборок в этом месяце — нагрузка распределяется ровнее.
+ */
+function candidatesFor(c) {
+  const month = c.date.slice(0, 7);
+  const list = all(`SELECT u.id, u.name, u.color,
+      EXISTS(SELECT 1 FROM unavailability WHERE user_id = u.id AND date = ?) AS unavailable,
+      EXISTS(SELECT 1 FROM cleanings WHERE cleaner_id = u.id AND date = ? AND id != ? AND status != 'cancelled') AS busy,
+      (SELECT COUNT(*) FROM cleanings WHERE cleaner_id = u.id AND substr(date, 1, 7) = ? AND status != 'cancelled') AS load
+    FROM users u WHERE u.role = 'cleaner' AND u.active = 1 ORDER BY u.name`, c.date, c.date, c.id, month);
+  for (const x of list) {
+    x.declined = c.status === 'declined' && c.cleaner_id === x.id;
+    x.free = !x.unavailable && !x.busy && !x.declined;
+  }
+  const best = list.filter((x) => x.free).sort((a, b) => a.load - b.load)[0];
+  if (best) best.suggested = true;
+  return list;
+}
+
+api.get('/cleanings/:id/candidates', requireChief, (req, res) => {
+  res.json(candidatesFor(loadCleaning(req, req.params.id)));
 });
 
 api.get('/cleanings/:id', (req, res) => {
   const c = loadCleaning(req, req.params.id);
+  // код доступа: шефу всегда, уборщице — только в день своей уборки, после того как она её приняла
+  const { access } = getSetting('apartment');
+  const accessOpen = isChief(req) || (c.date === today() && ['accepted', 'in_progress'].includes(c.status));
+  c.access = access && accessOpen ? access : null;
+  c.access_exists = !!access;
+  if (isChief(req) && ['unassigned', 'declined'].includes(c.status)) c.suggested = candidatesFor(c).find((x) => x.suggested) || null;
   c.checklist = all('SELECT * FROM checklist_items WHERE cleaning_id = ? ORDER BY position', c.id);
   c.media = mediaOf('cleaning', c.id);
   for (const item of c.checklist) item.photos = c.media.filter((m) => m.item_id === item.id).map((m) => m.id);
@@ -262,7 +299,11 @@ api.post('/cleanings/:id/decline', (req, res) => {
   if (!['assigned', 'accepted'].includes(c.status)) fail(400, 'Уборку нельзя отклонить в текущем статусе');
   const reason = String(req.body.reason || '').trim();
   run("UPDATE cleanings SET status = 'declined', decline_reason = ? WHERE id = ?", reason || null, c.id);
-  notify(chiefIds(), `${req.user.name} отказалась от уборки`, `${describe(c)}${reason ? ' — ' + reason : ''}. Назначьте другую уборщицу.`, `#/cleaning/${c.id}`);
+  run('INSERT INTO declines(cleaning_id, user_id) VALUES(?, ?)', c.id, req.user.id);
+  const next = candidatesFor({ ...c, status: 'declined' }).find((x) => x.suggested);
+  notify(chiefIds(), `${req.user.name} отказалась от уборки`,
+    `${describe(c)}${reason ? ' — ' + reason : ''}. `
+    + (next ? `Свободна ${next.name} — подтвердите замену одним нажатием.` : 'Свободных уборщиц на этот день нет.'), `#/cleaning/${c.id}`);
   res.json({ ok: true });
 });
 
@@ -557,6 +598,71 @@ api.put('/settings', requireChief, (req, res) => {
     if (k !== 'ical_status' && req.body[k] !== undefined) setSetting(k, req.body[k]);
   }
   res.json({ ok: true });
+});
+
+// ================= оценка уборки =================
+api.post('/cleanings/:id/rating', requireChief, (req, res) => {
+  const c = loadCleaning(req, req.params.id);
+  if (c.status !== 'done') fail(400, 'Оценить можно завершённую уборку');
+  const rating = Math.round(+req.body.rating);
+  if (!(rating >= 1 && rating <= 5)) fail(400, 'Оценка от 1 до 5');
+  run('UPDATE cleanings SET rating = ? WHERE id = ?', rating, c.id);
+  if (c.cleaner_id && !c.rating) notify(c.cleaner_id, 'Шеф оценил уборку', `${describe(c)}: ${'★'.repeat(rating)}${'☆'.repeat(5 - rating)}`, `#/cleaning/${c.id}`);
+  res.json({ ok: true });
+});
+
+// ================= «не могу в эти дни» =================
+api.get('/unavailability', (req, res) => {
+  const { from = '0000-00-00', to = '9999-99-99' } = req.query;
+  res.json(isChief(req)
+    ? all(`SELECT a.user_id, a.date, u.name, u.color FROM unavailability a JOIN users u ON u.id = a.user_id
+           WHERE a.date BETWEEN ? AND ? AND u.active = 1 ORDER BY a.date, u.name`, from, to)
+    : all('SELECT user_id, date FROM unavailability WHERE user_id = ? AND date BETWEEN ? AND ? ORDER BY date', req.user.id, from, to));
+});
+
+api.post('/unavailability/toggle', (req, res) => {
+  if (isChief(req)) fail(400, 'Только для уборщиц');
+  const date = String(req.body.date || '');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) fail(400, 'Неверная дата');
+  if (date < today()) fail(400, 'Прошедшие дни менять нельзя');
+  if (get('SELECT 1 AS x FROM unavailability WHERE user_id = ? AND date = ?', req.user.id, date)) {
+    run('DELETE FROM unavailability WHERE user_id = ? AND date = ?', req.user.id, date);
+    return res.json({ unavailable: false });
+  }
+  run('INSERT INTO unavailability(user_id, date) VALUES(?, ?)', req.user.id, date);
+  const conflict = get(`SELECT * FROM cleanings WHERE cleaner_id = ? AND date = ? AND status IN ('assigned','accepted')`, req.user.id, date);
+  res.json({ unavailable: true, conflict: conflict ? { id: conflict.id } : null });
+});
+
+// ================= статистика по уборщицам =================
+api.get('/stats', requireChief, (req, res) => {
+  const days = Math.max(0, +req.query.days || 0);
+  const from = days ? ymd(new Date(Date.now() - days * 86400000)) : '0000-00-00';
+  const minutes = (a, b) => (new Date(b.replace(' ', 'T')) - new Date(a.replace(' ', 'T'))) / 60000;
+  const people = all("SELECT id, name, color, active FROM users WHERE role = 'cleaner' ORDER BY active DESC, name");
+  const out = people.map((u) => {
+    const list = all(`${CLEANING_SELECT} WHERE c.cleaner_id = ? AND c.status = 'done' AND c.date >= ? AND c.date <= ?`, u.id, from, today());
+    const durations = list.filter((c) => c.started_at && c.finished_at)
+      .map((c) => minutes(c.started_at, c.finished_at)).filter((m) => m >= 5 && m <= 12 * 60);
+    // опоздание: начала позже запланированного времени больше чем на 15 минут
+    const timed = list.filter((c) => c.started_at && c.start_time);
+    const late = timed.filter((c) => minutes(`${c.date} ${c.start_time}:00`, c.started_at) > 15);
+    const rated = list.filter((c) => c.rating);
+    const withList = list.filter((c) => c.total_items);
+    return {
+      ...u,
+      count: list.length,
+      avg_minutes: durations.length ? Math.round(durations.reduce((s, m) => s + m, 0) / durations.length) : null,
+      full_checklist: withList.length ? withList.filter((c) => c.done_items === c.total_items).length / withList.length : null,
+      late: late.length,
+      timed: timed.length,
+      avg_rating: rated.length ? rated.reduce((s, c) => s + c.rating, 0) / rated.length : null,
+      rated: rated.length,
+      with_video: list.length ? list.filter((c) => c.videos).length / list.length : null,
+      declines: get('SELECT COUNT(*) n FROM declines WHERE user_id = ? AND substr(created_at, 1, 10) >= ?', u.id, from).n,
+    };
+  }).filter((p) => p.active || p.count);
+  res.json({ from, people: out });
 });
 
 // ================= demo =================

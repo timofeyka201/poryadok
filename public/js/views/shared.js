@@ -29,6 +29,7 @@ export function reportRow(c, { showDate = false, showPay = false } = {}) {
     missed ? `чек-лист ${c.done_items}/${c.total_items}` : 'чек-лист полностью',
     c.videos ? `видео: ${c.videos}` : 'без видео',
     c.comment && 'есть комментарий',
+    c.rating && `оценка ${c.rating}★`,
   ].filter(Boolean);
   return row({
     icon: c.videos ? 'video' : 'checklist',
@@ -87,12 +88,20 @@ export function cleaningEditor({ cleaning, date } = {}) {
 }
 
 /** Быстрое назначение уборщицы. */
-export function assignSheet(c) {
+export async function assignSheet(c) {
+  // кто свободен в этот день: отметки «не могу», другие уборки, отказ от этой уборки
+  const list = await api(`/cleanings/${c.id}/candidates`).catch(() => cleaners().map((u) => ({ ...u, free: true })));
+  list.sort((a, b) => (b.suggested ? 1 : 0) - (a.suggested ? 1 : 0) || (b.free ? 1 : 0) - (a.free ? 1 : 0));
+  const tag = (u) => u.suggested ? h('span.pill.green', 'предлагаем')
+    : u.declined ? h('span.pill.red', 'отказалась')
+      : u.unavailable ? h('span.pill.red', 'не может')
+        : u.busy ? h('span.pill.orange', 'другая уборка') : null;
   return sheet({
     title: 'Назначить уборщицу',
     build: (close) => h('div',
-      h('div.section-caption', `${dayLabel(c.date)} · ${c.start_time || ''}`),
-      h('div.group', cleaners().map((u) => h('button.row.has-icon', {
+      h('div.section-caption', `${dayLabel(c.date)}${c.start_time ? ' · ' + c.start_time : ''}`),
+      h('div.group', list.map((u) => h('button.row.has-icon', {
+        style: u.free ? null : { opacity: 0.6 },
         onclick: async () => {
           try {
             await api(`/cleanings/${c.id}`, { method: 'PATCH', body: { cleaner_id: u.id } });
@@ -103,9 +112,34 @@ export function assignSheet(c) {
         },
       },
       h('span.avatar', { style: { background: u.color, width: '32px', height: '32px', fontSize: '15px' } }, u.name[0]),
-      h('div.row-main', h('div.row-title', u.name)),
-      c.cleaner_id === u.id && h('span.pill.red', 'отказалась'))))),
+      h('div.row-main', h('div.row-title', u.name), u.load != null && h('div.row-sub', `уборок в этом месяце: ${u.load}`)),
+      tag(u)))),
+      h('div.section-foot', 'Уборщицы сами отмечают дни, когда не могут. Назначить можно любую — она получит уведомление.')),
   });
+}
+
+/** Код ключницы / доступ в квартиру — виден шефу и уборщице только в день её уборки. */
+export const accessBox = (text, note) => h('div.access-box',
+  h('span.row-icon', { style: { background: 'var(--accent)' } }, icon('key')),
+  h('div', h('b', 'Доступ в квартиру'), h('div.pre', text), note && h('div.small.muted', { style: { marginTop: '4px' } }, note)));
+
+/** Звёзды оценки 1–5; onRate — если можно менять. */
+export function ratingStars(value, onRate) {
+  const el = h('div.stars');
+  const draw = (v) => clear(el, [1, 2, 3, 4, 5].map((n) => h(onRate ? 'button' : 'span', {
+    class: n <= v ? 'on' : '',
+    'aria-label': `${n} из 5`,
+    onclick: onRate && (async () => { draw(n); try { await onRate(n); } catch (e) { draw(v); toast(e.message, true); } }),
+  }, icon('star'))));
+  draw(value || 0);
+  return el;
+}
+
+/** Быстрое назначение предложенной уборщицы (без выбора из списка). */
+export async function assignSuggested(c) {
+  await api(`/cleanings/${c.id}`, { method: 'PATCH', body: { cleaner_id: c.suggested.id } });
+  toast(`Назначена ${c.suggested.name} — она получит уведомление`);
+  refreshSummary();
 }
 
 function filePicker({ accept, multiple = true, label, ic }) {

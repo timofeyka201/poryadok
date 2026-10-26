@@ -28,27 +28,27 @@ export function seedDemoData() {
   const maria = user('maria', 'Мария', 'cleaner', '#1F6FEB');
   const d = (n) => ymd(new Date(Date.now() + n * 86400000));
 
-  const finish = (c, who, { missed = 0, comment = null } = {}) => {
+  const finish = (c, who, { missed = 0, comment = null, start = '11:05', end = '13:20', rating = null } = {}) => {
     run('UPDATE checklist_items SET done = 1, done_at = ? WHERE cleaning_id = ?', nowStr(), c.id);
     if (missed) run(`UPDATE checklist_items SET done = 0 WHERE id IN
       (SELECT id FROM checklist_items WHERE cleaning_id = ? ORDER BY position DESC LIMIT ?)`, c.id, missed);
     run(`UPDATE cleanings SET status = 'done', cleaner_id = ?, started_at = ?, finished_at = ?, comment = ?,
-         inspection = 'ok', inspection_at = ? WHERE id = ?`,
-      who, `${c.date} 11:05:00`, `${c.date} 13:20:00`, comment, `${c.date} 11:08:00`, c.id);
+         inspection = 'ok', inspection_at = ?, rating = ? WHERE id = ?`,
+      who, `${c.date} ${start}:00`, `${c.date} ${end}:00`, comment, `${c.date} ${start}:00`, rating, c.id);
   };
 
   // прошлые уборки — для истории и выплат
   const paidA = createCleaning({ date: d(-12), start_time: '11:00', cleaner_id: anna });
-  finish(paidA, anna, { comment: 'Всё чисто.' });
+  finish(paidA, anna, { comment: 'Всё чисто.', rating: 5 });
   const paidM = createCleaning({ date: d(-10), start_time: '12:00', cleaner_id: maria });
-  finish(paidM, maria);
+  finish(paidM, maria, { start: '12:40', end: '14:30', rating: 4 });
   const payout = Number(run('INSERT INTO payouts(cleaner_id, amount, cleanings_sum, purchases_sum, created_at) VALUES(?,?,?,?,?)',
     anna, 900, 900, 0, `${d(-9)} 19:00:00`).lastInsertRowid);
   run('UPDATE cleanings SET payout_id = ? WHERE id = ?', payout, paidA.id);
 
   finish(createCleaning({ date: d(-6), start_time: '11:00', end_time: '14:00', cleaner_id: anna }), anna,
-    { comment: 'В ванной слабо держится крючок для полотенца.' });
-  finish(createCleaning({ date: d(-4), start_time: '11:00', cleaner_id: maria }), maria, { missed: 2, comment: 'Не успела проветрить — гости заезжали раньше.' });
+    { comment: 'В ванной слабо держится крючок для полотенца.', end: '12:50', rating: 5 });
+  finish(createCleaning({ date: d(-4), start_time: '11:00', cleaner_id: maria }), maria, { missed: 2, comment: 'Не успела проветрить — гости заезжали раньше.', start: '11:35', end: '13:05', rating: 3 });
   finish(createCleaning({ date: d(-2), start_time: '12:00', type: 'general', cleaner_id: anna }), anna, { comment: 'Помыла окна и духовку.' });
 
   // сегодня — идёт уборка
@@ -62,6 +62,9 @@ export function seedDemoData() {
   createCleaning({ date: d(3), start_time: '12:00', end_time: '15:00', cleaner_id: anna });
   const decl = createCleaning({ date: d(5), start_time: '11:00', cleaner_id: maria });
   run("UPDATE cleanings SET status = 'declined', decline_reason = 'Уезжаю к родителям' WHERE id = ?", decl.id);
+  run('INSERT INTO declines(cleaning_id, user_id) VALUES(?, ?)', decl.id, maria);
+  for (const n of [5, 6]) run('INSERT INTO unavailability(user_id, date) VALUES(?, ?)', maria, d(n));
+  run('INSERT INTO unavailability(user_id, date) VALUES(?, ?)', anna, d(9));
   createCleaning({ date: d(7), start_time: '11:00', end_time: '14:00', source: 'ical', note: 'В этот же день заезд новых гостей — уборка срочная' });
   createCleaning({ date: d(10), start_time: '11:00', type: 'general', cleaner_id: anna });
 
@@ -84,7 +87,8 @@ export function seedDemoData() {
 
   setSetting('apartment', {
     name: 'Демо-квартира', address: 'ул. Примерная, 1, кв. 1 · 2 подъезд, 5 этаж',
-    info: 'Ключи: в ключнице у двери, код 0000\nWi‑Fi: DemoFlat / пароль 12345678\nБельё и полотенца: шкаф в коридоре\nМусор: контейнеры во дворе',
+    info: 'Wi‑Fi: DemoFlat / пароль 12345678\nБельё и полотенца: шкаф в коридоре\nМусор: контейнеры во дворе',
+    access: 'Ключница слева от двери, код 0000. Верните ключ в ключницу после уборки.',
   });
   return { chief, anna };
 }

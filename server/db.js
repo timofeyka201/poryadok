@@ -133,6 +133,19 @@ CREATE TABLE IF NOT EXISTS stays (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_stays_checkout ON stays(checkout);
+-- дни, когда уборщица не может работать
+CREATE TABLE IF NOT EXISTS unavailability (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  date TEXT NOT NULL,
+  PRIMARY KEY (user_id, date)
+);
+-- история отказов (для статистики): сам отказ в уборке перезаписывается при переназначении
+CREATE TABLE IF NOT EXISTS declines (
+  id INTEGER PRIMARY KEY,
+  cleaning_id INTEGER,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 CREATE TABLE IF NOT EXISTS push_subs (
   endpoint TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -146,6 +159,7 @@ const MIGRATIONS = [
   ['media', 'item_id', 'INTEGER'],
   ['cleanings', 'inspection', 'TEXT'], // осмотр после гостей: ok | issues
   ['cleanings', 'inspection_at', 'TEXT'],
+  ['cleanings', 'rating', 'INTEGER'], // оценка шефа 1–5
 ];
 
 export function createSchema(db) {

@@ -2,7 +2,7 @@ import {
   h, icon, api, post, upload, state, isChief, section, row, statusPill, dayLabel, timeRange, TYPE, money, clear,
   progressBar, act, toast, actionSheet, confirmAction, ago, fileSize, shortDate, timeOf, plural, avatar, compressImage,
 } from '../core.js';
-import { cleaningEditor, assignSheet, problemSheet, addPurchaseSheet, progressBlock } from './shared.js';
+import { cleaningEditor, assignSheet, problemSheet, addPurchaseSheet, progressBlock, accessBox, ratingStars } from './shared.js';
 import { declineFlow } from './home.js';
 import { refresh, refreshSummary } from '../app.js';
 
@@ -44,6 +44,11 @@ export async function cleaningView({ id }) {
       !c.inspection && c.status === 'done' && kv('Осмотр после гостей', 'не проводился'),
       chief && c.payout_id && kv('Выплата', 'выплачено')),
     c.note && h('div.note-box', { style: { marginTop: '12px' } }, c.note),
+    c.access && !['done', 'cancelled'].includes(c.status) && h('div', { style: { marginTop: '12px' } },
+      accessBox(c.access, chief ? 'Уборщица увидит это только в день уборки, после того как примет её' : null)),
+    !c.access && c.access_exists && mine && ['assigned', 'accepted'].includes(c.status) && h('div.small.muted', { style: { marginTop: '12px' } },
+      icon('key'), ' Код доступа появится здесь в день уборки', c.status === 'assigned' ? ', после того как вы её примете' : ''),
+    chief && c.suggested && h('div.note-box', { style: { marginTop: '12px' } }, `Свободна в этот день: ${c.suggested.name}`),
     c.status === 'declined' && h('div.note-box.warn', { style: { marginTop: '12px' } },
       `${mine ? 'Вы отказались' : `${c.cleaner_name} отказалась`}${c.decline_reason ? ': ' + c.decline_reason : ''}`));
 
@@ -219,6 +224,12 @@ export async function cleaningView({ id }) {
 
   const finishBlock = working && h('div.section', h('div.card', finishBtn, finishHint));
 
+  // оценка шефа: шеф ставит звёзды, уборщица видит свою оценку
+  const rating = c.status === 'done' && (chief || c.rating) && section('Оценка', null, h('div.card',
+    { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' } },
+    h('div.small.muted', chief ? (c.rating ? 'Можно изменить' : 'Уборщица увидит оценку') : 'Оценка шефа'),
+    ratingStars(c.rating, chief ? (n) => post(`/cleanings/${c.id}/rating`, { rating: n }).then(() => toast('Оценка сохранена')) : null)));
+
   async function finish() {
     const missed = total - done;
     const warnings = [
@@ -290,6 +301,7 @@ export async function cleaningView({ id }) {
       checklist,
       report,
       finishBlock,
+      rating,
       problems,
       purchases,
     ],

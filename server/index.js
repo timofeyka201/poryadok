@@ -13,6 +13,8 @@ app.set('trust proxy', 1);
 app.disable('x-powered-by');
 app.use(cookieParser());
 app.use(express.json({ limit: '1mb' }));
+// в Express 5 у запроса без тела req.body не определён — обработчикам проще всегда получать объект
+app.use((req, res, next) => { req.body ??= {}; next(); });
 
 app.use('/api', api);
 

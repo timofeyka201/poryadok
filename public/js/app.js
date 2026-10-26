@@ -7,6 +7,8 @@ import { purchasesView } from './views/purchases.js';
 import { problemsView } from './views/problems.js';
 import { moneyView } from './views/money.js';
 import { historyView } from './views/history.js';
+import { availabilityView } from './views/availability.js';
+import { statsView } from './views/stats.js';
 import { moreView, profileView, teamView, templatesView, settingsView, bookingsView } from './views/more.js';
 
 const routes = [
@@ -17,6 +19,8 @@ const routes = [
   ['/problems', problemsView],
   ['/money', moneyView],
   ['/history', historyView],
+  ['/availability', availabilityView],
+  ['/stats', statsView],
   ['/more', moreView],
   ['/profile', profileView],
   ['/team', teamView],
@@ -207,5 +211,9 @@ export async function subscribePush() {
   await post('/push/subscribe', sub.toJSON());
 }
 
-window.addEventListener('hashchange', () => render());
+window.addEventListener('hashchange', () => {
+  // открытые листы и меню закрываем при переходе (например, кнопкой «Назад» на Android)
+  document.querySelectorAll('.backdrop:not(.closing)').forEach((b) => b.click());
+  render();
+});
 render();

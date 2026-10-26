@@ -359,3 +359,23 @@ button.row:active, .row.tappable:active { background: #EDEDF0; }
 .apt-card.stay { background: linear-gradient(0deg, rgba(0, 102, 204, .06), rgba(0, 102, 204, .06)), var(--card); }
 .apt-card.cleaning { background: linear-gradient(0deg, var(--accent-tint), var(--accent-tint)), var(--card); }
 .tpl-item .tpl-photo.on { color: var(--accent); background: var(--accent-tint); }
+
+/* ---------- доступ, оценка, «не могу», статистика ---------- */
+.access-box { display: flex; gap: 12px; align-items: flex-start; background: var(--accent-tint); border-radius: var(--radius-sm); padding: 12px 14px; font-size: 15px; }
+.access-box .row-icon { width: 30px; height: 30px; border-radius: 8px; }
+.access-box b { display: block; font-size: 13px; color: var(--accent); margin-bottom: 2px; }
+.small.muted > svg.i { width: 15px; height: 15px; vertical-align: -3px; }
+.stars { display: flex; gap: 2px; }
+.stars > * { width: 36px; height: 36px; display: grid; place-items: center; color: #D1D1D6; }
+.stars svg.i { width: 26px; height: 26px; stroke-width: 1.6; }
+.stars .on { color: var(--accent); }
+.stars .on svg.i { fill: currentColor; }
+.cal-day.off .n { background: rgba(215, 0, 21, .08); color: var(--red); text-decoration: line-through; }
+.cal-day.off.sel .n { background: var(--red); color: #fff; }
+.cal-day[disabled] { opacity: .35; }
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.stat { background: var(--bg); border-radius: var(--radius-sm); padding: 12px 14px; }
+.stat-value { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; }
+.stat-value small { font-size: 14px; font-weight: 500; color: var(--text-2); }
+.stat-label { font-size: 13px; color: var(--text-2); margin-top: 3px; line-height: 1.3; }
+.section-foot > svg.i { width: 15px; height: 15px; vertical-align: -3px; }

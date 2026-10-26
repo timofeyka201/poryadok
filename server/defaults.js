@@ -3,7 +3,9 @@ export const DEFAULT_SETTINGS = {
   apartment: {
     name: 'Квартира',
     address: '',
-    info: 'Ключи: …\nWi‑Fi: …\nЧистое бельё лежит: …\nМусор выносить: …',
+    info: 'Wi‑Fi: …\nЧистое бельё лежит: …\nМусор выносить: …',
+    // код ключницы / замка: уборщица видит его только в день своей уборки
+    access: '',
   },
   times: { checkout: '11:00', checkin: '14:00' },
   rates: { regular: 900, general: 1500 },
