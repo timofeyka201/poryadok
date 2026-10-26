@@ -17,8 +17,19 @@ DOMAIN="${DOMAIN:-}"
 # --- Node.js 22 ---
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]; then
   echo "→ Устанавливаю Node.js 22"
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-  apt-get install -y nodejs
+  if ! { curl -fsSL --max-time 60 https://deb.nodesource.com/setup_22.x | bash - && apt-get install -y nodejs; }; then
+    # запасной путь: готовая сборка Node.js с официального сайта или зеркала
+    NODE_V=v22.22.0
+    ARCH=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/')
+    for base in https://nodejs.org/dist https://npmmirror.com/mirrors/node; do
+      if curl -fsSL --max-time 300 "$base/$NODE_V/node-$NODE_V-linux-$ARCH.tar.xz" -o /tmp/node.tar.xz; then
+        tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm -f /tmp/node.tar.xz
+        ln -sf /usr/local/bin/node /usr/bin/node
+        break
+      fi
+    done
+  fi
+  node -v
 fi
 
 # --- Caddy: веб-сервер, сам получает и продлевает HTTPS-сертификат ---
@@ -40,7 +51,8 @@ chown -R poryadok:poryadok "$DATA"
 [ -f "$CONF/accounts.json" ] && chown poryadok:poryadok "$CONF/accounts.json" && chmod 600 "$CONF/accounts.json"
 
 echo "→ Устанавливаю зависимости"
-npm ci --omit=dev --no-audit --no-fund --loglevel=error
+npm ci --omit=dev --no-audit --no-fund --loglevel=error \
+  || npm ci --omit=dev --no-audit --no-fund --loglevel=error --registry=https://registry.npmmirror.com
 
 # --- службы: приложение и автообновление с GitHub раз в минуту ---
 cat > /etc/systemd/system/poryadok.service <<UNIT
