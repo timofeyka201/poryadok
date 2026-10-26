@@ -32,8 +32,9 @@ export function seedDemoData() {
     run('UPDATE checklist_items SET done = 1, done_at = ? WHERE cleaning_id = ?', nowStr(), c.id);
     if (missed) run(`UPDATE checklist_items SET done = 0 WHERE id IN
       (SELECT id FROM checklist_items WHERE cleaning_id = ? ORDER BY position DESC LIMIT ?)`, c.id, missed);
-    run("UPDATE cleanings SET status = 'done', cleaner_id = ?, started_at = ?, finished_at = ?, comment = ? WHERE id = ?",
-      who, `${c.date} 11:05:00`, `${c.date} 13:20:00`, comment, c.id);
+    run(`UPDATE cleanings SET status = 'done', cleaner_id = ?, started_at = ?, finished_at = ?, comment = ?,
+         inspection = 'ok', inspection_at = ? WHERE id = ?`,
+      who, `${c.date} 11:05:00`, `${c.date} 13:20:00`, comment, `${c.date} 11:08:00`, c.id);
   };
 
   // прошлые уборки — для истории и выплат
@@ -52,7 +53,7 @@ export function seedDemoData() {
 
   // сегодня — идёт уборка
   const now = createCleaning({ date: today(), start_time: '11:00', end_time: '14:00', cleaner_id: anna, note: 'Заезд в 14:00 — гости с ребёнком, поставить детскую кроватку' });
-  run("UPDATE cleanings SET status = 'in_progress', started_at = ? WHERE id = ?", nowStr(), now.id);
+  run("UPDATE cleanings SET status = 'in_progress', started_at = ?, inspection = 'ok', inspection_at = ? WHERE id = ?", nowStr(), nowStr(), now.id);
   run('UPDATE checklist_items SET done = 1 WHERE cleaning_id = ? AND position < 9', now.id);
 
   // будущие

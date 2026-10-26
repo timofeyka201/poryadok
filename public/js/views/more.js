@@ -154,7 +154,10 @@ export async function teamView() {
 let tplTab = 'regular';
 export async function templatesView() {
   const s = await api('/settings');
-  const templates = s.templates;
+  // пункты храним как { text, photo }; старые шаблоны могли быть строками
+  const templates = Object.fromEntries(Object.entries(s.templates).map(([k, secs]) => [k, secs.map((sec) => ({
+    ...sec, items: sec.items.map((i) => (typeof i === 'string' ? { text: i, photo: false } : { text: i.text, photo: !!i.photo })),
+  }))]));
   const body = h('div');
   let dirty = false;
   const saveBtn = h('button.btn.primary.block', { onclick: save }, 'Сохранить чек-листы');
@@ -165,21 +168,35 @@ export async function templatesView() {
       tpl.map((sec, si) => h('div.section', { style: { marginTop: si ? '22px' : '4px' } },
         h('input.tpl-section-name', { value: sec.section, placeholder: 'Название раздела', oninput: (e) => { sec.section = e.target.value; dirty = true; } }),
         h('div.group',
-          sec.items.map((text, ii) => h('div.tpl-item',
-            h('input', { value: text, placeholder: 'Пункт', oninput: (e) => { sec.items[ii] = e.target.value; dirty = true; } }),
+          sec.items.map((item, ii) => h('div.tpl-item',
+            h('input', { value: item.text, placeholder: 'Пункт', oninput: (e) => { item.text = e.target.value; dirty = true; } }),
+            h('button.icon-btn.tpl-photo', {
+              class: item.photo ? 'on' : '',
+              'aria-label': 'Требовать фото',
+              title: 'Требовать фото',
+              onclick: (e) => {
+                item.photo = !item.photo;
+                dirty = true;
+                e.currentTarget.classList.toggle('on', item.photo);
+                toast(item.photo ? 'Пункт нужно будет подтвердить фото' : 'Фото для пункта не требуется');
+              },
+            }, icon('camera')),
             h('button.icon-btn', { 'aria-label': 'Удалить пункт', onclick: () => { sec.items.splice(ii, 1); dirty = true; draw(); } }, icon('x')))),
-          h('button.row.accent', { onclick: () => { sec.items.push(''); dirty = true; draw(); body.querySelectorAll('.section')[si].querySelector('.tpl-item:last-of-type input')?.focus(); } },
+          h('button.row.accent', { onclick: () => { sec.items.push({ text: '', photo: false }); dirty = true; draw(); body.querySelectorAll('.section')[si].querySelector('.tpl-item:last-of-type input')?.focus(); } },
             h('div.row-main', h('div.row-title', '+ Добавить пункт')))),
         h('button', { style: { color: 'var(--red)', fontSize: '14px', margin: '8px 16px 0' }, onclick: async () => {
           if (await confirmAction(`Удалить раздел «${sec.section}»?`, 'Удалить', { destructive: true })) { tpl.splice(si, 1); dirty = true; draw(); }
         } }, 'Удалить раздел'))),
-      h('div.section', h('button.btn.tinted.block', { onclick: () => { tpl.push({ section: 'Новый раздел', items: [''] }); dirty = true; draw(); } }, icon('plus'), 'Добавить раздел')));
+      h('div.section', h('button.btn.tinted.block', { onclick: () => { tpl.push({ section: 'Новый раздел', items: [{ text: '', photo: false }] }); dirty = true; draw(); } }, icon('plus'), 'Добавить раздел')));
   }
 
   async function save() {
     for (const k of Object.keys(templates)) {
       templates[k] = templates[k]
-        .map((sec) => ({ section: sec.section.trim() || 'Без названия', items: sec.items.map((i) => i.trim()).filter(Boolean) }))
+        .map((sec) => ({
+          section: sec.section.trim() || 'Без названия',
+          items: sec.items.map((i) => ({ text: i.text.trim(), photo: i.photo })).filter((i) => i.text),
+        }))
         .filter((sec) => sec.items.length);
     }
     await act(saveBtn, () => api('/settings', { method: 'PUT', body: { templates } }), 'Сохранено. Применится к новым уборкам');
@@ -192,7 +209,7 @@ export async function templatesView() {
     title: 'Чек-листы',
     back: '#/more',
     large: true,
-    subtitle: 'Если уборщица завершит уборку с неотмеченными пунктами, вы увидите это в отчёте',
+    subtitle: 'Значок камеры — пункт подтверждается фото. Неотмеченные пункты вы увидите в отчёте',
     content: [
       segmented([['regular', 'Обычная уборка'], ['general', 'Генеральная']], tplTab, (v) => { tplTab = v; draw(); }),
       body,

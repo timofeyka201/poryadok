@@ -40,16 +40,16 @@ const fail = (status, message) => { throw new HttpError(status, message); };
 // Express 5 сам ловит ошибки из async-обработчиков
 const isChief = (req) => req.user.role === 'chief';
 
-function saveMedia(files, ownerType, ownerId, userId) {
+function saveMedia(files, ownerType, ownerId, userId, itemId = null) {
   for (const f of files || []) {
-    run(`INSERT INTO media(owner_type, owner_id, kind, filename, original_name, mime, size, uploaded_by)
-         VALUES(?,?,?,?,?,?,?,?)`,
+    run(`INSERT INTO media(owner_type, owner_id, kind, filename, original_name, mime, size, uploaded_by, item_id)
+         VALUES(?,?,?,?,?,?,?,?,?)`,
       ownerType, ownerId, f.mimetype.startsWith('video/') ? 'video' : 'photo',
-      path.relative(UPLOAD_DIR, f.path), Buffer.from(f.originalname, 'latin1').toString('utf8'), f.mimetype, f.size, userId);
+      path.relative(UPLOAD_DIR, f.path), Buffer.from(f.originalname, 'latin1').toString('utf8'), f.mimetype, f.size, userId, itemId);
   }
 }
 const mediaOf = (type, id) => all(
-  `SELECT m.id, m.kind, m.original_name, m.size, m.mime, m.expired, m.created_at, m.uploaded_by, u.name AS uploaded_by_name
+  `SELECT m.id, m.kind, m.original_name, m.size, m.mime, m.expired, m.created_at, m.uploaded_by, m.item_id, u.name AS uploaded_by_name
    FROM media m LEFT JOIN users u ON u.id = m.uploaded_by
    WHERE owner_type = ? AND owner_id = ? ORDER BY m.id`, type, id);
 
@@ -107,11 +107,30 @@ api.get('/cleanings/:id', (req, res) => {
   const c = loadCleaning(req, req.params.id);
   c.checklist = all('SELECT * FROM checklist_items WHERE cleaning_id = ? ORDER BY position', c.id);
   c.media = mediaOf('cleaning', c.id);
+  for (const item of c.checklist) item.photos = c.media.filter((m) => m.item_id === item.id).map((m) => m.id);
   c.problems = all(`SELECT p.*, u.name AS author FROM problems p JOIN users u ON u.id = p.created_by
                     WHERE cleaning_id = ? ORDER BY p.id DESC`, c.id);
   c.purchases = all(`SELECT p.*, u.name AS author FROM purchases p JOIN users u ON u.id = p.created_by
                      WHERE cleaning_id = ? ORDER BY p.id DESC`, c.id);
   res.json(c);
+});
+
+// Состояние квартиры для шефа: идёт уборка / грязно / гости в квартире / готова к заселению
+api.get('/apartment-status', requireChief, (req, res) => {
+  const t = today();
+  const hm = nowStr().slice(11, 16);
+  const PENDING = "c.status IN ('unassigned','assigned','accepted','declined')";
+  const last = get(`${CLEANING_SELECT} WHERE c.status = 'done' ORDER BY c.finished_at DESC LIMIT 1`) || null;
+  const active = get(`${CLEANING_SELECT} WHERE c.status = 'in_progress' ORDER BY c.date LIMIT 1`);
+  if (active) return res.json({ state: 'cleaning', cleaning: active, last });
+  // уборка, время которой уже наступило (гости выехали), а её ещё не сделали
+  const dirty = get(`${CLEANING_SELECT} WHERE ${PENDING}
+    AND (c.date < ? OR (c.date = ? AND (c.start_time IS NULL OR c.start_time <= ?))) ORDER BY c.date LIMIT 1`, t, t, hm);
+  if (dirty) return res.json({ state: 'dirty', cleaning: dirty, last });
+  const occupied = get(`${CLEANING_SELECT} WHERE ${PENDING} AND c.date = ? ORDER BY c.start_time LIMIT 1`, t);
+  if (occupied) return res.json({ state: 'occupied', cleaning: occupied, last });
+  const next = get(`${CLEANING_SELECT} WHERE ${PENDING} AND c.date > ? ORDER BY c.date, c.start_time LIMIT 1`, t) || null;
+  res.json({ state: 'ready', last, next });
 });
 
 api.post('/cleanings', requireChief, (req, res) => {
@@ -231,9 +250,37 @@ api.post('/checklist/:itemId/toggle', (req, res) => {
   if (!item) fail(404, 'Пункт не найден');
   const c = ownCleaning(req, item.cleaning_id);
   if (c.status !== 'in_progress') fail(400, 'Нажмите «Начать уборку», чтобы отмечать пункты');
+  if (!c.inspection) fail(400, 'Сначала осмотрите квартиру после гостей');
+  if (!item.done && item.photo_required && !get('SELECT id FROM media WHERE item_id = ?', item.id)) {
+    fail(400, 'Для этого пункта нужно фото');
+  }
   const done = item.done ? 0 : 1;
   run('UPDATE checklist_items SET done = ?, done_at = ? WHERE id = ?', done, done ? nowStr() : null, item.id);
   res.json({ done });
+});
+
+// фото к пункту чек-листа: сохраняем и сразу отмечаем пункт выполненным
+api.post('/checklist/:itemId/photo', upload.single('photo'), (req, res) => {
+  const item = get('SELECT * FROM checklist_items WHERE id = ?', req.params.itemId);
+  if (!item) fail(404, 'Пункт не найден');
+  const c = ownCleaning(req, item.cleaning_id);
+  if (c.status !== 'in_progress') fail(400, 'Нажмите «Начать уборку», чтобы отмечать пункты');
+  if (!c.inspection) fail(400, 'Сначала осмотрите квартиру после гостей');
+  if (!req.file) fail(400, 'Нужна фотография');
+  tx(() => {
+    saveMedia([req.file], 'cleaning', c.id, req.user.id, item.id);
+    run('UPDATE checklist_items SET done = 1, done_at = ? WHERE id = ?', nowStr(), item.id);
+  });
+  res.json({ id: get('SELECT id FROM media WHERE item_id = ? ORDER BY id DESC LIMIT 1', item.id).id });
+});
+
+// осмотр после гостей — первый шаг уборки
+api.post('/cleanings/:id/inspection', (req, res) => {
+  const c = ownCleaning(req);
+  if (c.status !== 'in_progress') fail(400, 'Сначала начните уборку');
+  const result = req.body.result === 'issues' ? 'issues' : 'ok';
+  run('UPDATE cleanings SET inspection = ?, inspection_at = ? WHERE id = ?', result, nowStr(), c.id);
+  res.json({ ok: true });
 });
 
 api.post('/cleanings/:id/media', upload.array('files', 10), (req, res) => {

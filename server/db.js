@@ -131,9 +131,21 @@ CREATE TABLE IF NOT EXISTS push_subs (
 );
 `;
 
+// Новые поля для уже существующих баз (CREATE TABLE IF NOT EXISTS их не добавит)
+const MIGRATIONS = [
+  ['checklist_items', 'photo_required', 'INTEGER NOT NULL DEFAULT 0'],
+  ['media', 'item_id', 'INTEGER'],
+  ['cleanings', 'inspection', 'TEXT'], // осмотр после гостей: ok | issues
+  ['cleanings', 'inspection_at', 'TEXT'],
+];
+
 export function createSchema(db) {
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  for (const [table, column, def] of MIGRATIONS) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+  }
 }
 createSchema(mainDb);
 

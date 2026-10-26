@@ -14,8 +14,11 @@ export function fillChecklist(cleaningId, type) {
   const tpl = getSetting('templates')[type] || [];
   let pos = 0;
   for (const s of tpl) {
-    for (const text of s.items) {
-      run('INSERT INTO checklist_items(cleaning_id, section, text, position) VALUES(?,?,?,?)', cleaningId, s.section, text, pos++);
+    for (const item of s.items) {
+      // пункт шаблона — строка или { text, photo }
+      const { text, photo } = typeof item === 'string' ? { text: item, photo: false } : item;
+      run('INSERT INTO checklist_items(cleaning_id, section, text, position, photo_required) VALUES(?,?,?,?,?)',
+        cleaningId, s.section, text, pos++, photo ? 1 : 0);
     }
   }
 }

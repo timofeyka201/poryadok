@@ -109,6 +109,23 @@ export function upload(path, form, onProgress) {
   });
 }
 
+/** Уменьшает фото с телефона (обычно 3–5 МБ) до ~1600 px — загрузка в разы быстрее. */
+export async function compressImage(file, maxSide = 1600, quality = 0.8) {
+  try {
+    const bmp = await createImageBitmap(file);
+    const scale = Math.min(1, maxSide / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
+    if (!blob || blob.size >= file.size) return file;
+    return new File([blob], (file.name || 'photo').replace(/\.\w+$/, '') + '.jpg', { type: 'image/jpeg' });
+  } catch {
+    return file; // формат, который браузер не умеет декодировать, — отправляем как есть
+  }
+}
+
 // ---------- feedback ----------
 export function toast(text, err = false) {
   document.querySelectorAll('.toast').forEach((t) => t.remove());

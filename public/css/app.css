@@ -333,3 +333,28 @@ button.row:active, .row.tappable:active { background: #EDEDF0; }
 .demo-bar b { display: block; color: var(--accent); font-size: 14px; }
 .demo-bar .btn.small { height: 32px; padding: 0 12px; font-size: 13px; flex: none; background: #fff; }
 .demo-link { display: block; margin: 10px auto 0; color: var(--accent); font-size: 15px; padding: 8px; }
+
+/* ---------- фото в чек-листе ---------- */
+.check:not(.readonly) { cursor: pointer; }
+.check-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.photo-tag { display: inline-flex; align-items: center; gap: 4px; align-self: flex-start; font-size: 12px; font-weight: 600; color: var(--accent); background: var(--accent-tint); border-radius: 999px; padding: 2px 8px 2px 6px; }
+.photo-tag svg.i { width: 14px; height: 14px; stroke-width: 2; }
+.check.done .photo-tag { color: var(--orange); background: rgba(194, 94, 0, .1); }
+.check-photos { display: flex; gap: 6px; flex-wrap: wrap; }
+.check-photos a { width: 56px; height: 56px; border-radius: 10px; overflow: hidden; background: var(--fill); display: block; }
+.check-photos img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.check-cam { width: 36px; height: 36px; margin: -6px -6px -6px 0; flex: none; }
+.check.uploading { opacity: .5; pointer-events: none; }
+.check.uploading .box { animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { transform: scale(.85); } }
+
+/* ---------- состояние квартиры ---------- */
+.apt-status { display: flex; align-items: center; gap: 14px; }
+.apt-status .apt-icon { width: 48px; height: 48px; border-radius: 14px; display: grid; place-items: center; color: #fff; flex: none; }
+.apt-status .apt-icon svg.i { width: 26px; height: 26px; stroke-width: 2; }
+.apt-status .apt-title { font-size: 19px; font-weight: 700; letter-spacing: -0.01em; }
+.apt-status .apt-sub { font-size: 14px; color: var(--text-2); margin-top: 2px; line-height: 1.35; }
+.apt-card.ready { background: linear-gradient(0deg, rgba(36, 138, 61, .07), rgba(36, 138, 61, .07)), var(--card); }
+.apt-card.dirty { background: linear-gradient(0deg, rgba(215, 0, 21, .06), rgba(215, 0, 21, .06)), var(--card); }
+.apt-card.cleaning { background: linear-gradient(0deg, var(--accent-tint), var(--accent-tint)), var(--card); }
+.tpl-item .tpl-photo.on { color: var(--accent); background: var(--accent-tint); }

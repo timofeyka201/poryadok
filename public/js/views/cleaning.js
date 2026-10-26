@@ -1,6 +1,6 @@
 import {
   h, icon, api, post, upload, state, isChief, section, row, statusPill, dayLabel, timeRange, TYPE, money, clear,
-  progressBar, act, toast, actionSheet, confirmAction, ago, fileSize, shortDate, timeOf, plural, avatar,
+  progressBar, act, toast, actionSheet, confirmAction, ago, fileSize, shortDate, timeOf, plural, avatar, compressImage,
 } from '../core.js';
 import { cleaningEditor, assignSheet, problemSheet, addPurchaseSheet, progressBlock } from './shared.js';
 import { declineFlow } from './home.js';
@@ -12,7 +12,9 @@ export async function cleaningView({ id }) {
   const c = await api(`/cleanings/${id}`);
   const chief = isChief();
   const mine = c.cleaner_id === state.me.id;
-  const canCheck = mine && c.status === 'in_progress';
+  const working = mine && c.status === 'in_progress';
+  const needInspection = working && !c.inspection;
+  const canCheck = working && !needInspection;
   const canReport = mine && ['in_progress', 'done'].includes(c.status);
   const reload = () => refresh();
 
@@ -36,6 +38,10 @@ export async function cleaningView({ id }) {
       (chief || mine) && kv('Оплата', money(c.pay_amount)),
       c.started_at && kv('Начата', `${shortDate(c.started_at)}, ${timeOf(c.started_at)}`),
       c.finished_at && kv('Завершена', `${shortDate(c.finished_at)}, ${timeOf(c.finished_at)}`),
+      c.inspection && kv('Осмотр после гостей', c.inspection === 'ok'
+        ? `всё в порядке · ${timeOf(c.inspection_at)}`
+        : h('span', { style: { color: 'var(--red)' } }, `найдены проблемы · ${timeOf(c.inspection_at)}`)),
+      !c.inspection && c.status === 'done' && kv('Осмотр после гостей', 'не проводился'),
       chief && c.payout_id && kv('Выплата', 'выплачено')),
     c.note && h('div.note-box', { style: { marginTop: '12px' } }, c.note),
     c.status === 'declined' && h('div.note-box.warn', { style: { marginTop: '12px' } },
@@ -77,11 +83,44 @@ export async function cleaningView({ id }) {
     if (!s || s.name !== item.section) sections.push((s = { name: item.section, items: [] }));
     s.items.push(item);
   }
+  // фото к пункту: камера → сжатие → загрузка → пункт отмечается сам
+  const takePhoto = (item, el) => {
+    const input = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden' });
+    input.addEventListener('change', async () => {
+      const file = input.files[0];
+      if (!file) return;
+      el.classList.add('uploading');
+      try {
+        const form = new FormData();
+        form.append('photo', await compressImage(file));
+        const { id: mediaId } = await upload(`/checklist/${item.id}/photo`, form);
+        if (!item.done) { item.done = 1; done += 1; updateProgress(); }
+        item.photos.push(mediaId);
+        el.replaceWith(checkEl(item));
+        toast('Фото добавлено');
+      } catch (e) {
+        el.classList.remove('uploading');
+        toast(e.message, true);
+      }
+    });
+    input.click();
+  };
+
   const checkEl = (item) => {
-    const el = h('button.check', { class: [item.done ? 'done' : '', canCheck ? '' : 'readonly'].join(' ') },
-      h('span.box', icon('check')), h('span.check-text', item.text));
+    const el = h('div.check', { class: [item.done ? 'done' : '', canCheck ? '' : 'readonly'].join(' ') },
+      h('span.box', icon('check')),
+      h('div.check-body',
+        h('span.check-text', item.text),
+        !!item.photo_required && !item.photos.length && h('span.photo-tag', icon('camera'), item.done ? 'без фото' : 'нужно фото'),
+        item.photos.length > 0 && h('div.check-photos', item.photos.map((pid) =>
+          h('a', { href: `/media/${pid}`, target: '_blank', onclick: (e) => e.stopPropagation() }, h('img', { src: `/media/${pid}`, loading: 'lazy', alt: '' }))))),
+      canCheck && !!item.photo_required && h('button.icon-btn.check-cam', {
+        'aria-label': 'Сфотографировать',
+        onclick: (e) => { e.stopPropagation(); takePhoto(item, el); },
+      }, icon('camera')));
     if (canCheck) {
       el.addEventListener('click', async () => {
+        if (item.photo_required && !item.done && !item.photos.length) return takePhoto(item, el);
         const was = !!item.done;
         item.done = was ? 0 : 1;
         el.classList.toggle('done', !was);
@@ -94,11 +133,33 @@ export async function cleaningView({ id }) {
     }
     return el;
   };
+
+  // осмотр после гостей — до уборки, чтобы было чем подтвердить претензию к гостю
+  const inspection = needInspection && h('div.section', h('div.card',
+    h('div.meta', { style: { marginBottom: '8px' } }, h('span.pill.accent', 'Шаг 1'), h('span.small.muted', 'до начала уборки')),
+    h('div', { style: { fontSize: '20px', fontWeight: 700 } }, 'Осмотр после гостей'),
+    h('div.small.muted', { style: { margin: '6px 0 16px', lineHeight: 1.45 } },
+      'Пройдитесь по квартире до уборки: нет ли поломок, пятен, разбитой посуды, забытых вещей. '
+      + 'Если что-то нашли — сфотографируйте: так можно предъявить претензию гостю.'),
+    h('div.btn-row',
+      h('button.btn.danger', {
+        onclick: async () => {
+          if (!(await problemSheet({ cleaningId: c.id }))) return;
+          await act(null, () => post(`/cleanings/${c.id}/inspection`, { result: 'issues' }));
+          reload();
+        },
+      }, 'Есть проблема'),
+      h('button.btn.primary', {
+        onclick: (e) => act(e.currentTarget, async () => { await post(`/cleanings/${c.id}/inspection`, { result: 'ok' }); reload(); }, 'Отлично, можно убирать'),
+      }, 'Всё в порядке'))));
   updateProgress();
 
   const checklist = section('Чек-лист', counter,
     h('div', { style: { margin: '0 4px 14px' } }, bar),
     mine && ['assigned', 'accepted'].includes(c.status) && h('div.note-box', { style: { marginBottom: '14px' } }, 'Нажмите «Начать уборку», чтобы отмечать пункты.'),
+    needInspection && h('div.note-box', { style: { marginBottom: '14px' } }, 'Сначала осмотрите квартиру (шаг 1 выше) — потом можно отмечать пункты.'),
+    canCheck && c.checklist.some((i) => i.photo_required) && h('div.section-foot', { style: { margin: '-6px 4px 12px' } },
+      'Пункты с камерой отмечаются фотографией результата — нажмите на пункт, откроется камера.'),
     c.status === 'done' && done < total && h('div.note-box.warn', { style: { marginBottom: '14px' } },
       h('b', `Не выполнено: ${total - done} ${plural(total - done, 'пункт', 'пункта', 'пунктов')}`),
       h('div.small', { style: { marginTop: '4px' } }, c.checklist.filter((i) => !i.done).map((i) => `• ${i.text}`).join('\n'))),
@@ -108,7 +169,7 @@ export async function cleaningView({ id }) {
 
   // ---------- отчёт ----------
   const videos = c.media.filter((m) => m.kind === 'video');
-  const photos = c.media.filter((m) => m.kind === 'photo');
+  const photos = c.media.filter((m) => m.kind === 'photo' && !m.item_id);
   const comment = h('textarea.textarea', { rows: 3, placeholder: 'Как прошла уборка? Что заметили?' }, c.comment || '');
   if (canReport) {
     comment.addEventListener('change', () => post(`/cleanings/${c.id}/comment`, { comment: comment.value }).then(() => toast('Комментарий сохранён')).catch((e) => toast(e.message, true)));
@@ -156,7 +217,7 @@ export async function cleaningView({ id }) {
         ? h('div', { style: { marginTop: '6px' } }, h('div.section-caption', { style: { margin: '10px 4px 7px' } }, 'Комментарий'), comment)
         : c.comment && h('div.card', h('div.small.muted', { style: { marginBottom: '6px' } }, 'Комментарий уборщицы'), h('div.pre', c.comment))));
 
-  const finishBlock = canCheck && h('div.section', h('div.card', finishBtn, finishHint));
+  const finishBlock = working && h('div.section', h('div.card', finishBtn, finishHint));
 
   async function finish() {
     const missed = total - done;
@@ -225,6 +286,7 @@ export async function cleaningView({ id }) {
     content: [
       header,
       actions && h('div.section', actions),
+      inspection,
       checklist,
       report,
       finishBlock,
