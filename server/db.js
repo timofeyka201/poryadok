@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -9,10 +10,10 @@ export const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data');
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
-export const db = new DatabaseSync(path.join(DATA_DIR, 'poryadok.db'));
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+export const mainDb = new DatabaseSync(path.join(DATA_DIR, 'poryadok.db'));
+mainDb.exec('PRAGMA journal_mode = WAL;');
 
-db.exec(`
+const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
   login TEXT UNIQUE NOT NULL,
@@ -128,14 +129,26 @@ CREATE TABLE IF NOT EXISTS push_subs (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   data TEXT NOT NULL
 );
-`);
+`;
+
+export function createSchema(db) {
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec(SCHEMA);
+}
+createSchema(mainDb);
 
 // ---------- helpers ----------
-export const all = (sql, ...p) => db.prepare(sql).all(...p);
-export const get = (sql, ...p) => db.prepare(sql).get(...p);
-export const run = (sql, ...p) => db.prepare(sql).run(...p);
+// Запросы идут в рабочую базу, а внутри withDb() — в другую (так работает демо-песочница).
+const dbContext = new AsyncLocalStorage();
+export const currentDb = () => dbContext.getStore() || mainDb;
+export const withDb = (db, fn) => dbContext.run(db, fn);
+
+export const all = (sql, ...p) => currentDb().prepare(sql).all(...p);
+export const get = (sql, ...p) => currentDb().prepare(sql).get(...p);
+export const run = (sql, ...p) => currentDb().prepare(sql).run(...p);
 
 export function tx(fn) {
+  const db = currentDb();
   db.exec('BEGIN');
   try {
     const r = fn();

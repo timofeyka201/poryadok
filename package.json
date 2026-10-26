@@ -5,10 +5,11 @@
   "private": true,
   "type": "module",
   "main": "server/index.js",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
-    "start": "node --no-warnings server/index.js",
-    "demo": "node --no-warnings scripts/demo.js"
+    "start": "node --no-warnings server/index.js"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

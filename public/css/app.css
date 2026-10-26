@@ -326,3 +326,10 @@ button.row:active, .row.tappable:active { background: #EDEDF0; }
 .suggest button:active { background: #EDEDF0; }
 .suggest svg.i { width: 18px; height: 18px; color: var(--accent); }
 .sheet .suggest { margin: -6px 0 14px; }
+
+/* ---------- демо ---------- */
+.demo-bar { display: flex; align-items: center; gap: 12px; background: var(--accent-tint); border-radius: var(--radius-sm); padding: 10px 12px 10px 14px; margin: 0 0 14px; font-size: 13px; color: var(--text-2); line-height: 1.3; }
+.demo-bar > div { flex: 1; }
+.demo-bar b { display: block; color: var(--accent); font-size: 14px; }
+.demo-bar .btn.small { height: 32px; padding: 0 12px; font-size: 13px; flex: none; background: #fff; }
+.demo-link { display: block; margin: 10px auto 0; color: var(--accent); font-size: 15px; padding: 8px; }

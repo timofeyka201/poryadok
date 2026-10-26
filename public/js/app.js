@@ -96,6 +96,7 @@ export async function render({ keepScroll = false } = {}) {
     h('div.tb-side.right', view.actions, isTab && bellButton()));
 
   const page = h('main.page',
+    state.me.demo && demoBar(),
     large && h('h1.large-title', view.title),
     large && view.subtitle && h('div.subtitle', view.subtitle),
     view.content);
@@ -106,6 +107,19 @@ export async function render({ keepScroll = false } = {}) {
   updateBadges();
 }
 export const refresh = () => render({ keepScroll: true });
+
+function demoBar() {
+  const toRole = isChief() ? 'cleaner' : 'chief';
+  return h('div.demo-bar',
+    h('div', h('b', 'Демо-режим'), 'Можно всё нажимать — данные примерные и нигде не сохраняются'),
+    h('button.btn.tinted.small', {
+      onclick: async () => {
+        await post('/demo/switch', { role: toRole });
+        state.me = null;
+        if (location.hash === '#/' || !location.hash) render(); else location.hash = '#/';
+      },
+    }, toRole === 'cleaner' ? 'Глазами уборщицы' : 'Глазами шефа'));
+}
 
 function tabbar(path) {
   const tabs = TABS[state.me.role];

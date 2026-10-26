@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  all, get, run, tx, getSetting, setSetting, hashPassword, checkPassword, today, nowStr, UPLOAD_DIR,
+  all, get, run, tx, getSetting, setSetting, hashPassword, checkPassword, today, nowStr, UPLOAD_DIR, withDb,
 } from './db.js';
 import { login, logout, requireAuth, requireChief } from './auth.js';
 import { notify, chiefIds, cleanerIds, saveSubscription, vapidPublicKey } from './notify.js';
@@ -13,14 +13,25 @@ import { syncIcal } from './ical.js';
 
 export const api = express.Router();
 
-const upload = multer({
+const multerFor = (fileSize) => multer({
   storage: multer.diskStorage({
-    destination: UPLOAD_DIR,
+    // файлы демо-сессии лежат в её папке и удаляются вместе с ней
+    destination: (req, file, cb) => cb(null, req.demo ? req.demo.dir : UPLOAD_DIR),
     filename: (req, file, cb) => cb(null, crypto.randomBytes(12).toString('hex') + path.extname(file.originalname || '').toLowerCase()),
   }),
-  limits: { fileSize: 4 * 1024 ** 3 },
+  limits: { fileSize },
   fileFilter: (req, file, cb) => cb(null, /^(video|image)\//.test(file.mimetype)),
 });
+const realUpload = multerFor(4 * 1024 ** 3);
+const demoUpload = multerFor(300 * 1024 ** 2);
+
+// Разбор файлов идёт в событиях потока, где теряется контекст демо-базы, — возвращаем его перед обработчиком
+const upload = Object.fromEntries(['array', 'single'].map((kind) => [kind, (...args) => {
+  const real = realUpload[kind](...args);
+  const demo = demoUpload[kind](...args);
+  return (req, res, next) => (req.demo ? demo : real)(req, res, (err) =>
+    err ? next(err) : req.demo ? withDb(req.demo.db, () => next()) : next());
+}]));
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -34,7 +45,7 @@ function saveMedia(files, ownerType, ownerId, userId) {
     run(`INSERT INTO media(owner_type, owner_id, kind, filename, original_name, mime, size, uploaded_by)
          VALUES(?,?,?,?,?,?,?,?)`,
       ownerType, ownerId, f.mimetype.startsWith('video/') ? 'video' : 'photo',
-      f.filename, Buffer.from(f.originalname, 'latin1').toString('utf8'), f.mimetype, f.size, userId);
+      path.relative(UPLOAD_DIR, f.path), Buffer.from(f.originalname, 'latin1').toString('utf8'), f.mimetype, f.size, userId);
   }
 }
 const mediaOf = (type, id) => all(
@@ -413,7 +424,7 @@ api.post('/users', requireChief, (req, res) => {
   if (!/^[a-z0-9._-]{3,}$/.test(login)) fail(400, 'Логин: от 3 символов, латиница и цифры');
   if (!name) fail(400, 'Укажите имя');
   if (password.length < 6) fail(400, 'Пароль: минимум 6 символов');
-  if (get('SELECT id FROM users WHERE login = ?', login)) fail(400, 'Такой логин уже есть');
+  if (login === 'demo' || get('SELECT id FROM users WHERE login = ?', login)) fail(400, 'Такой логин уже есть');
   run("INSERT INTO users(login, name, role, pass_hash, color) VALUES(?,?,'cleaner',?,?)",
     login, name, hashPassword(password), req.body.color || '#8E1B33');
   res.json({ ok: true });
@@ -451,6 +462,13 @@ api.put('/settings', requireChief, (req, res) => {
   for (const k of SETTINGS_KEYS) {
     if (k !== 'ical_status' && req.body[k] !== undefined) setSetting(k, req.body[k]);
   }
+  res.json({ ok: true });
+});
+
+// ================= demo =================
+api.post('/demo/switch', (req, res) => {
+  if (!req.demo) fail(403, 'Только для демо-доступа');
+  req.demo.userId = req.body.role === 'cleaner' ? req.demo.cleanerId : req.demo.chiefId;
   res.json({ ok: true });
 });
 

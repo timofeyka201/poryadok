@@ -5,11 +5,11 @@ export function loginView() {
   const password = h('input.input', { type: 'password', placeholder: 'Пароль', autocomplete: 'current-password' });
   const btn = h('button.btn.primary.block', { type: 'submit' }, 'Войти');
 
-  const submit = async (e) => {
+  const submit = async (e, creds) => {
     e.preventDefault();
     btn.disabled = true;
     try {
-      await api('/login', { method: 'POST', body: { login: login.value, password: password.value } });
+      await api('/login', { method: 'POST', body: creds || { login: login.value, password: password.value } });
       location.hash = '#/';
     } catch (err) {
       toast(err.message, true);
@@ -24,5 +24,6 @@ export function loginView() {
     h('h1', 'Порядок'),
     h('p.lead', 'Уборки квартиры — без чатов и путаницы'),
     h('form.stack', { onsubmit: submit }, login, password, h('div', { style: { height: '6px' } }), btn),
-    h('div.hint', 'Логин и пароль выдаёт шеф'));
+    h('div.hint', 'Логин и пароль выдаёт шеф'),
+    h('button.demo-link', { type: 'button', onclick: (e) => submit(e, { login: 'demo', password: 'demo' }) }, 'Посмотреть демо-версию'));
 }
