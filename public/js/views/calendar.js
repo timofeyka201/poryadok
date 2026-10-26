@@ -63,7 +63,10 @@ export async function calendarView() {
         ].filter(Boolean).join(' ');
         return h('button.cal-day', { class: cls, onclick: () => { cal.selected = key; if (d.getMonth() !== m - 1) { cal.month = key.slice(0, 7); load(); } else draw(); } },
           h('span.n', d.getDate()),
-          h('span.cal-dots', list.slice(0, 3).map((c) => h('i', { style: { background: dotColor(c) } }))));
+          h('span.cal-dots',
+            list.slice(0, 3).map((c) => h('i', { style: { background: dotColor(c) } })),
+            // у шефа: кольцо цвета уборщицы — она не может в этот день
+            isChief() && unavail.filter((x) => x.date === key).slice(0, 3).map((x) => h('i.ring', { style: { borderColor: x.color }, title: `${x.name} не может` }))));
       }));
 
     clear(wrap,
@@ -90,10 +93,13 @@ export async function calendarView() {
 
   function legend() {
     const users = [...new Map(items.filter((c) => c.cleaner_id).map((c) => [c.cleaner_id, c])).values()];
-    if (!users.length) return null;
+    if (!users.length && !unavail.length) return null;
+    const item = (mark, text) => h('span.small.muted', { style: { display: 'inline-flex', alignItems: 'center', gap: '6px' } }, mark, text);
     return h('div.meta', { style: { margin: '12px 6px 0', gap: '14px' } },
-      users.map((c) => h('span.small.muted', { style: { display: 'inline-flex', alignItems: 'center', gap: '6px' } }, h('span.dot', { style: { background: c.cleaner_color } }), c.cleaner_name)),
-      h('span.small.muted', { style: { display: 'inline-flex', alignItems: 'center', gap: '6px' } }, h('span.dot', { style: { background: '#C7C7CC' } }), 'не назначена'));
+      users.map((c) => item(h('span.dot', { style: { background: c.cleaner_color } }), c.cleaner_name)),
+      users.length > 0 && item(h('span.dot', { style: { background: '#C7C7CC' } }), 'не назначена'),
+      unavail.length > 0 && item(h('span.dot.ring', { style: { borderColor: 'var(--text-2)' } }), 'кольцо — не может'),
+      unavail.length > 0 && h('a.small', { href: '#/availability' }, 'Кто когда не может'));
   }
 
   const addForDay = () => cleaningEditor({ date: cal.selected }).then((id) => id && load());

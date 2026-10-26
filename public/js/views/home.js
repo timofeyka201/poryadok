@@ -1,7 +1,7 @@
 import {
   h, icon, api, post, state, isChief, section, row, statusPill, dayLabel, fullDate, timeRange, TYPE, money,
   emptyState, progressBar, todayYmd, addDays, act, plural, sheet, field, toast, clear, ago, timeOf, shortDate, STATUS,
-  confirmAction,
+  confirmAction, parseYmd,
 } from '../core.js';
 import { cleaningRow, reportRow, cleaningEditor, assignSheet, assignSuggested, accessBox, pushBanner, apartmentCard, problemSheet, addPurchaseSheet } from './shared.js';
 import { refresh, refreshSummary } from '../app.js';
@@ -102,12 +102,17 @@ export async function declineFlow(btn, c) {
 // =============== шеф ===============
 async function chiefHome() {
   const t = todayYmd();
-  const [list, money_, problems, purchases] = await Promise.all([
+  const [list, money_, problems, purchases, unavail] = await Promise.all([
     api(`/cleanings?from=${addDays(t, -7)}&to=${addDays(t, 30)}`),
     api('/money'),
     api('/problems?status=open'),
     api('/purchases?status=needed'),
+    api(`/unavailability?from=${t}&to=${addDays(t, 6)}`),
   ]);
+  // «Анна — ср, пт; Мария — сб» на ближайшие 7 дней
+  const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+  const cantWeek = Object.entries(unavail.reduce((acc, x) => ((acc[x.name] ||= []).push(WD[parseYmd(x.date).getDay()]), acc), {}))
+    .map(([name, days]) => `${name} — ${days.join(', ')}`).join('; ');
   const attention = list.filter((c) => c.date >= t && ['unassigned', 'declined'].includes(c.status));
   const today = list.filter((c) => c.date === t && c.status !== 'cancelled');
   const upcoming = list.filter((c) => c.date > t && c.date <= addDays(t, 7) && !['unassigned', 'declined', 'cancelled'].includes(c.status));
@@ -144,7 +149,8 @@ async function chiefHome() {
         row({ icon: 'alert', iconBg: problems.length ? 'var(--red)' : 'var(--gray)', title: 'Открытые проблемы', value: problems.length || 'нет', chevron: true, onclick: () => (location.hash = '#/problems') }),
         row({ icon: 'cart', title: 'Нужно докупить', value: purchases.length || 'нет', chevron: true, onclick: () => (location.hash = '#/purchases') }),
         row({ icon: 'wallet', iconBg: 'var(--green)', title: 'К выплате уборщицам', value: money(unpaid), chevron: true, onclick: () => (location.hash = '#/money') }),
-        waiting > 0 && row({ icon: 'clock', iconBg: 'var(--orange)', title: 'Ждут подтверждения', value: waiting, chevron: true, onclick: () => (location.hash = '#/calendar') }))),
+        waiting > 0 && row({ icon: 'clock', iconBg: 'var(--orange)', title: 'Ждут подтверждения', value: waiting, chevron: true, onclick: () => (location.hash = '#/calendar') }),
+        cantWeek && row({ icon: 'ban', iconBg: 'var(--orange)', title: 'Не могут на этой неделе', sub: cantWeek, chevron: true, onclick: () => (location.hash = '#/availability') }))),
 
       section('Сегодня', null,
         today.length

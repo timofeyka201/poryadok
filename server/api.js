@@ -7,8 +7,8 @@ import {
   all, get, run, tx, getSetting, setSetting, hashPassword, checkPassword, today, nowStr, ymd, UPLOAD_DIR, withDb,
 } from './db.js';
 import { login, logout, requireAuth, requireChief } from './auth.js';
-import { notify, chiefIds, cleanerIds, saveSubscription, vapidPublicKey } from './notify.js';
-import { createCleaning, fillChecklist, describe, TYPE_LABEL } from './cleanings.js';
+import { notify, notifyMerged, chiefIds, cleanerIds, saveSubscription, vapidPublicKey } from './notify.js';
+import { createCleaning, fillChecklist, describe, ruDate, TYPE_LABEL } from './cleanings.js';
 import { syncIcal } from './ical.js';
 
 export const api = express.Router();
@@ -630,6 +630,7 @@ api.post('/unavailability/toggle', (req, res) => {
     return res.json({ unavailable: false });
   }
   run('INSERT INTO unavailability(user_id, date) VALUES(?, ?)', req.user.id, date);
+  notifyMerged(chiefIds(), `${req.user.name} не сможет убирать`, ruDate(date), '#/availability');
   const conflict = get(`SELECT * FROM cleanings WHERE cleaner_id = ? AND date = ? AND status IN ('assigned','accepted')`, req.user.id, date);
   res.json({ unavailable: true, conflict: conflict ? { id: conflict.id } : null });
 });

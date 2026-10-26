@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import webpush from 'web-push';
-import { all, run, DATA_DIR } from './db.js';
+import { all, get, run, DATA_DIR } from './db.js';
 
 // VAPID-ключи для push-уведомлений генерируются один раз и хранятся в data/
 const vapidFile = path.join(DATA_DIR, 'vapid.json');
@@ -30,6 +30,19 @@ export function notify(userIds, title, body = '', link = '') {
           if (err.statusCode === 404 || err.statusCode === 410) run('DELETE FROM push_subs WHERE endpoint = ?', s.endpoint);
         });
     }
+  }
+}
+
+/**
+ * Как notify, но если за последние minutes минут уже есть непрочитанное уведомление с тем же заголовком —
+ * дописывает строку в него (без повторного push). Чтобы 5 отмеченных подряд дней не дали 5 уведомлений.
+ */
+export function notifyMerged(userIds, title, line, link = '', minutes = 15) {
+  for (const uid of [...new Set([].concat(userIds).filter(Boolean))]) {
+    const recent = get(`SELECT id, body FROM notifications WHERE user_id = ? AND title = ? AND read = 0
+      AND created_at >= datetime('now', 'localtime', ?) ORDER BY id DESC LIMIT 1`, uid, title, `-${minutes} minutes`);
+    if (recent) run('UPDATE notifications SET body = ? WHERE id = ?', `${recent.body}, ${line}`, recent.id);
+    else notify(uid, title, line, link);
   }
 }
 

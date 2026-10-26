@@ -1,6 +1,6 @@
 import {
   h, icon, api, post, state, isChief, section, row, field, segmented, clear, sheet, toast, act, confirmAction,
-  avatar, COLORS, money, emptyState, ago, plural,
+  avatar, COLORS, money, emptyState, ago, plural, todayYmd, addDays, shortDate,
 } from '../core.js';
 import { pushState, subscribePush, isIos, isStandalone, refresh } from '../app.js';
 import { apartmentCard } from './shared.js';
@@ -58,6 +58,7 @@ export async function moreView() {
         row({ icon: 'wallet', iconBg: 'var(--green)', title: 'Выплаты уборщицам', value: money(unpaid), chevron: true, onclick: () => (location.hash = '#/money') }),
         row({ icon: 'clock', iconBg: 'var(--accent)', title: 'История уборок', chevron: true, onclick: () => (location.hash = '#/history') }),
         row({ icon: 'chart', iconBg: '#5E5CE6', title: 'Статистика уборщиц', chevron: true, onclick: () => (location.hash = '#/stats') }),
+        row({ icon: 'ban', iconBg: 'var(--orange)', title: 'Кто когда не может', chevron: true, onclick: () => (location.hash = '#/availability') }),
         row({ icon: 'users', iconBg: 'var(--blue)', title: 'Команда', value: state.users.filter((u) => u.role === 'cleaner' && u.active).length, chevron: true, onclick: () => (location.hash = '#/team') }))),
       section('Настройки', null, h('div.group',
         row({ icon: 'checklist', title: 'Чек-листы уборки', chevron: true, onclick: () => (location.hash = '#/templates') }),
@@ -91,7 +92,9 @@ export async function profileView() {
 
 // =============== команда ===============
 export async function teamView() {
-  const users = await api('/users');
+  const t = todayYmd();
+  const [users, unavail] = await Promise.all([api('/users'), api(`/unavailability?from=${t}&to=${addDays(t, 60)}`)]);
+  const cantOf = (id) => unavail.filter((x) => x.user_id === id).map((x) => shortDate(x.date));
   const openEditor = (u) => {
     const isNew = !u;
     u = u || { role: 'cleaner', color: COLORS[users.length % COLORS.length], active: 1 };
@@ -132,7 +135,8 @@ export async function teamView() {
   const groupFor = (list) => h('div.group', list.map((u) => row({
     left: avatar(u),
     title: u.name,
-    sub: `${u.login}${u.role === 'cleaner' ? ` · уборок: ${u.done_count}` : ' · шеф'}${u.active ? '' : ' · отключена'}`,
+    sub: `${u.login}${u.role === 'cleaner' ? ` · уборок: ${u.done_count}` : ' · шеф'}${u.active ? '' : ' · отключена'}`
+      + (cantOf(u.id).length ? `\nне может: ${cantOf(u.id).slice(0, 6).join(', ')}${cantOf(u.id).length > 6 ? '…' : ''}` : ''),
     chevron: true,
     cls: u.active ? '' : 'muted',
     onclick: () => openEditor(u),
