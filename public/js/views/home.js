@@ -1,6 +1,7 @@
 import {
   h, icon, api, post, state, isChief, section, row, statusPill, dayLabel, fullDate, timeRange, TYPE, money,
   emptyState, progressBar, todayYmd, addDays, act, plural, sheet, field, toast, clear, ago, timeOf, shortDate, STATUS,
+  confirmAction,
 } from '../core.js';
 import { cleaningRow, reportRow, cleaningEditor, assignSheet, pushBanner, apartmentCard, problemSheet, addPurchaseSheet } from './shared.js';
 import { refresh, refreshSummary } from '../app.js';
@@ -155,6 +156,9 @@ function apartmentStatus() {
   const card = h('div.card.tappable.apt-card', { style: { marginBottom: '6px', minHeight: '80px' } });
   let target = '#/calendar';
   card.addEventListener('click', (e) => { if (!e.target.closest('button')) location.hash = target; });
+  // 'YYYY-MM-DD HH:MM' → «сегодня в 11:00» / «пт, 30 октября в 11:00»
+  const when = (dt) => `${dayLabel(dt.slice(0, 10)).toLowerCase()} в ${dt.slice(11, 16)}`;
+  const btn = (text, cls, onclick) => h(`button.btn.small.${cls}`, { style: { marginTop: '10px', marginRight: '8px' }, onclick }, text);
 
   async function load() {
     let s;
@@ -162,34 +166,87 @@ function apartmentStatus() {
     const c = s.cleaning;
     target = c ? `#/cleaning/${c.id}` : s.last ? `#/cleaning/${s.last.id}` : '#/calendar';
     const checkin = c?.end_time ? ` · заезд в ${c.end_time}` : '';
-    const who = c && (c.cleaner_name ? `${c.cleaner_name} — ${STATUS[c.status][0].toLowerCase()}` : 'уборщица не назначена');
-    const view = {
-      ready: ['green', 'check', 'Квартира готова к заселению',
-        [s.last ? `Убрана ${ago(s.last.finished_at)} · ${s.last.cleaner_name}` : 'Уборок ещё не было',
-          s.next && `следующая уборка: ${dayLabel(s.next.date).toLowerCase()}`].filter(Boolean).join(' · ')],
-      dirty: ['red', 'alert', 'Грязно — нужна уборка',
-        `${c && c.date < todayYmd() ? `Не убрано с ${shortDate(c.date)}` : `Гости выехали${c?.start_time ? ' в ' + c.start_time : ''}`} · ${who}${checkin}`],
-      occupied: ['blue', 'user', 'Гости в квартире',
-        `Выезд в ${c?.start_time}, затем уборка · ${c?.cleaner_name || 'уборщица не назначена'}${checkin}`],
-      cleaning: ['accent', 'sparkles', 'Идёт уборка',
-        `${c?.cleaner_name} · ${c?.total_items ? Math.round((c.done_items / c.total_items) * 100) : 0}% чек-листа`
-          + `${c?.started_at ? ' · начала в ' + timeOf(c.started_at) : ''}${checkin}`
-          + `${c?.inspection === 'issues' ? ' · при осмотре найдены проблемы' : ''}`],
-    }[s.state];
+    const who = c ? (c.cleaner_name ? `${c.cleaner_name} — ${STATUS[c.status][0].toLowerCase()}` : 'уборщица не назначена') : 'уборка не запланирована';
+    let view;
+    let actions = [];
+    if (s.state === 'cleaning') {
+      view = ['accent', 'sparkles', 'Идёт уборка',
+        `${c.cleaner_name} · ${c.total_items ? Math.round((c.done_items / c.total_items) * 100) : 0}% чек-листа`
+          + `${c.started_at ? ' · начала в ' + timeOf(c.started_at) : ''}${checkin}`
+          + `${c.inspection === 'issues' ? ' · при осмотре найдены проблемы' : ''}`];
+    } else if (s.state === 'stay') {
+      view = ['blue', 'users', 'Гости проживают',
+        `Выезд ${when(s.stay.checkout)} · уборка: ${c ? c.cleaner_name || 'уборщица не назначена' : 'не запланирована'}`];
+      if (s.stay.id) {
+        actions.push(btn('Гости выехали', 'tinted', async () => {
+          if (!(await confirmAction('Гости уже выехали?', 'Да, выехали', { message: 'Квартира станет «Грязно — нужна уборка»' }))) return;
+          await act(null, () => post(`/stays/${s.stay.id}/checkout`), 'Отмечено');
+          load();
+        }));
+      }
+    } else if (s.state === 'dirty') {
+      const since = s.ended ? `Гости выехали ${when(s.ended.checkout)}`
+        : c.date < todayYmd() ? `Не убрано с ${shortDate(c.date)}` : `Гости выехали${c.start_time ? ' в ' + c.start_time : ''}`;
+      view = ['red', 'alert', 'Грязно — нужна уборка', `${since} · ${who}${checkin}`];
+      if (c && ['unassigned', 'declined'].includes(c.status)) actions.push(btn('Назначить уборщицу', 'primary', () => assignSheet(c).then((ok) => ok && refresh())));
+      if (!c) actions.push(btn('Создать уборку', 'primary', () => cleaningEditor({ date: todayYmd() }).then((id) => id && refresh())));
+      if (c && c.date > todayYmd()) {
+        actions.push(btn('Перенести уборку на сегодня', 'tinted', async () => {
+          await act(null, () => api(`/cleanings/${c.id}`, { method: 'PATCH', body: { date: todayYmd() } }),
+            c.cleaner_id ? `Перенесено, ${c.cleaner_name} получит уведомление` : 'Перенесено на сегодня');
+          refresh();
+        }));
+      }
+      actions.push(btn('Уже убрано', 'plain', async () => {
+        if (!(await confirmAction('Квартира уже убрана?', 'Да, убрана', { message: 'Например, уборку сделали без приложения' }))) return;
+        await act(null, () => post('/apartment/cleaned'), 'Отмечено');
+        load();
+      }));
+    } else {
+      view = ['green', 'check', 'Квартира готова к заселению',
+        [s.manualClean && (!s.last || s.manualClean > s.last.finished_at) ? `Отмечена убранной ${ago(s.manualClean)}`
+          : s.last ? `Убрана ${ago(s.last.finished_at)} · ${s.last.cleaner_name}` : 'Уборок ещё не было',
+          s.nextStay ? `следующий заезд ${when(s.nextStay.checkin)}` : s.next && `следующая уборка: ${dayLabel(s.next.date).toLowerCase()}`].filter(Boolean).join(' · ')];
+      actions.push(btn('Гости заселились', 'tinted', () => checkinSheet(s).then((ok) => ok && refresh())));
+    }
     const [color, ic, title, sub] = view;
-    card.className = `card tappable apt-card ${s.state === 'occupied' ? '' : s.state}`;
+    card.className = `card tappable apt-card ${s.state}`;
     clear(card,
       h('div.apt-status',
         h('span.apt-icon', { style: { background: `var(--${color})` } }, icon(ic)),
-        h('div', { style: { flex: 1, minWidth: 0 } }, h('div.apt-title', title), h('div.apt-sub', sub),
-          s.state === 'dirty' && c && ['unassigned', 'declined'].includes(c.status)
-            && h('button.btn.primary.small', { style: { marginTop: '10px' }, onclick: () => assignSheet(c).then((ok) => ok && refresh()) }, 'Назначить уборщицу'))),
+        h('div', { style: { flex: 1, minWidth: 0 } }, h('div.apt-title', title), h('div.apt-sub', sub), actions.length > 0 && h('div', actions))),
       s.state === 'cleaning' && h('div', { style: { marginTop: '14px' } }, progressBar(c.done_items, c.total_items)));
   }
 
   load();
   const timer = setInterval(() => (card.isConnected ? load() : clearInterval(timer)), 60_000);
   return card;
+}
+
+/** Шеф отмечает заселение гостей вручную (если бронирования не подключены по iCal). */
+function checkinSheet(s) {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const outDate = s.next?.date || addDays(todayYmd(), 1);
+  const f = {
+    inDate: h('input.input', { type: 'date', value: todayYmd() }),
+    inTime: h('input.input', { type: 'time', value: `${pad(now.getHours())}:${pad(now.getMinutes())}` }),
+    outDate: h('input.input', { type: 'date', value: outDate }),
+    outTime: h('input.input', { type: 'time', value: s.next?.start_time || s.times?.checkout || '11:00' }),
+  };
+  return sheet({
+    title: 'Гости заселились',
+    doneText: 'Сохранить',
+    build: () => h('div',
+      h('div.field-row', field('Заезд', f.inDate), field('Время', f.inTime)),
+      h('div.field-row', field('Выезд', f.outDate), field('Время', f.outTime)),
+      h('div.section-foot', { style: { margin: '0 4px' } },
+        'До выезда квартира будет «Гости проживают». Если на дату выезда нет уборки — она создастся сама, останется назначить уборщицу.')),
+    onDone: async () => {
+      await post('/stays', { checkin: `${f.inDate.value} ${f.inTime.value}`, checkout: `${f.outDate.value} ${f.outTime.value}` });
+      toast('Отмечено: гости проживают');
+    },
+  });
 }
 
 function todayCard(c) {

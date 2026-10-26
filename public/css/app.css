@@ -356,5 +356,6 @@ button.row:active, .row.tappable:active { background: #EDEDF0; }
 .apt-status .apt-sub { font-size: 14px; color: var(--text-2); margin-top: 2px; line-height: 1.35; }
 .apt-card.ready { background: linear-gradient(0deg, rgba(36, 138, 61, .07), rgba(36, 138, 61, .07)), var(--card); }
 .apt-card.dirty { background: linear-gradient(0deg, rgba(215, 0, 21, .06), rgba(215, 0, 21, .06)), var(--card); }
+.apt-card.stay { background: linear-gradient(0deg, rgba(0, 102, 204, .06), rgba(0, 102, 204, .06)), var(--card); }
 .apt-card.cleaning { background: linear-gradient(0deg, var(--accent-tint), var(--accent-tint)), var(--card); }
 .tpl-item .tpl-photo.on { color: var(--accent); background: var(--accent-tint); }

@@ -116,21 +116,68 @@ api.get('/cleanings/:id', (req, res) => {
 });
 
 // Состояние квартиры для шефа: идёт уборка / грязно / гости в квартире / готова к заселению
+// Состояние квартиры для шефа: идёт уборка / гости проживают / грязно / готова к заселению.
+// Источники: уборки, проживания из бронирований (iCal) и отметки шефа «заселились / выехали / уже убрано».
 api.get('/apartment-status', requireChief, (req, res) => {
   const t = today();
-  const hm = nowStr().slice(11, 16);
+  const now = nowStr().slice(0, 16);
+  const hm = now.slice(11, 16);
+  const times = getSetting('times');
   const PENDING = "c.status IN ('unassigned','assigned','accepted','declined')";
+  const pendingFrom = (date) => get(`${CLEANING_SELECT} WHERE ${PENDING} AND c.date >= ? ORDER BY c.date, c.start_time LIMIT 1`, date) || null;
   const last = get(`${CLEANING_SELECT} WHERE c.status = 'done' ORDER BY c.finished_at DESC LIMIT 1`) || null;
+  const manualClean = getSetting('manual_clean_at');
+  const cleanedAt = [last?.finished_at, manualClean].filter(Boolean).sort().at(-1) || '';
+  const out = (state, extra = {}) => res.json({ state, last, times, manualClean, ...extra });
+
   const active = get(`${CLEANING_SELECT} WHERE c.status = 'in_progress' ORDER BY c.date LIMIT 1`);
-  if (active) return res.json({ state: 'cleaning', cleaning: active, last });
-  // уборка, время которой уже наступило (гости выехали), а её ещё не сделали
-  const dirty = get(`${CLEANING_SELECT} WHERE ${PENDING}
+  if (active) return out('cleaning', { cleaning: active });
+
+  const stay = get('SELECT * FROM stays WHERE checkin <= ? AND checkout > ? ORDER BY checkout LIMIT 1', now, now);
+  if (stay) return out('stay', { stay, cleaning: pendingFrom(stay.checkout.slice(0, 10)) });
+
+  // уборка, время которой наступило (гости выехали), а её ещё не сделали
+  const due = get(`${CLEANING_SELECT} WHERE ${PENDING}
     AND (c.date < ? OR (c.date = ? AND (c.start_time IS NULL OR c.start_time <= ?))) ORDER BY c.date LIMIT 1`, t, t, hm);
-  if (dirty) return res.json({ state: 'dirty', cleaning: dirty, last });
-  const occupied = get(`${CLEANING_SELECT} WHERE ${PENDING} AND c.date = ? ORDER BY c.start_time LIMIT 1`, t);
-  if (occupied) return res.json({ state: 'occupied', cleaning: occupied, last });
-  const next = get(`${CLEANING_SELECT} WHERE ${PENDING} AND c.date > ? ORDER BY c.date, c.start_time LIMIT 1`, t) || null;
-  res.json({ state: 'ready', last, next });
+  if (due) return out('dirty', { cleaning: due });
+  // гости выехали позже последней уборки
+  const ended = get('SELECT * FROM stays WHERE checkout <= ? ORDER BY checkout DESC LIMIT 1', now);
+  if (ended && cleanedAt < ended.checkout) return out('dirty', { ended, cleaning: pendingFrom(ended.checkout.slice(0, 10)) });
+
+  // без данных о бронях: в день уборки до её начала гости ещё в квартире
+  const today_ = get(`${CLEANING_SELECT} WHERE ${PENDING} AND c.date = ? ORDER BY c.start_time LIMIT 1`, t);
+  if (today_) return out('stay', { stay: { checkout: `${t} ${today_.start_time}` }, cleaning: today_ });
+
+  const nextStay = get('SELECT * FROM stays WHERE checkin > ? ORDER BY checkin LIMIT 1', now) || null;
+  out('ready', { next: pendingFrom(t), nextStay });
+});
+
+const DT = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/;
+api.post('/stays', requireChief, (req, res) => {
+  const { checkin, checkout } = req.body;
+  if (!DT.test(checkin || '') || !DT.test(checkout || '')) fail(400, 'Укажите дату и время заезда и выезда');
+  if (checkout <= checkin) fail(400, 'Выезд должен быть позже заезда');
+  tx(() => {
+    run("INSERT INTO stays(checkin, checkout, source) VALUES(?, ?, 'manual')", checkin, checkout);
+    // в день выезда нужна уборка — создаём, если её ещё нет
+    const date = checkout.slice(0, 10);
+    if (!get("SELECT id FROM cleanings WHERE date = ? AND status != 'cancelled'", date)) {
+      createCleaning({ date, start_time: checkout.slice(11, 16) });
+    }
+  });
+  res.json({ ok: true });
+});
+
+api.post('/stays/:id/checkout', requireChief, (req, res) => {
+  const now = nowStr().slice(0, 16);
+  run('UPDATE stays SET checkout = ? WHERE id = ? AND checkout > ?', now, req.params.id, now);
+  res.json({ ok: true });
+});
+
+// шеф отмечает, что квартира уже убрана (например, уборку сделали без приложения)
+api.post('/apartment/cleaned', requireChief, (req, res) => {
+  setSetting('manual_clean_at', nowStr());
+  res.json({ ok: true });
 });
 
 api.post('/cleanings', requireChief, (req, res) => {

@@ -10,6 +10,7 @@ export const DEFAULT_SETTINGS = {
   video_retention_days: 30,
   ical: [], // [{ name: 'Авито', url: 'https://…' }]
   ical_status: null, // { at, ok, message }
+  manual_clean_at: null, // когда шеф отметил «квартира уже убрана»
   templates: {
     // photo: true — уборщица должна сфотографировать результат, чтобы отметить пункт
     regular: [

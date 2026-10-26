@@ -99,6 +99,15 @@ export async function syncIcal() {
 
     // отменённые брони: удаляем уборку, только если все ленты загрузились без ошибок
     if (!errors.length) {
+      // проживания гостей пересобираем из актуальных броней (одна бронь с разных площадок — один раз)
+      run("DELETE FROM stays WHERE source = 'ical' AND checkout >= ?", t);
+      const seen = new Set();
+      for (const e of events) {
+        if (e.end < t || seen.has(e.start + e.end)) continue;
+        seen.add(e.start + e.end);
+        run("INSERT INTO stays(checkin, checkout, source) VALUES(?, ?, 'ical')", `${e.start} ${checkin}`, `${e.end} ${checkout}`);
+      }
+
       const present = new Set(events.map((e) => e.uid));
       const future = all(`SELECT * FROM cleanings WHERE source = 'ical' AND date >= ?
                           AND status IN ('unassigned','assigned','accepted','declined')`, t);

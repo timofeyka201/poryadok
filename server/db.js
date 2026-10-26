@@ -124,6 +124,15 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, read);
+-- проживание гостей: из бронирований (iCal) или отмечено шефом вручную; время — 'YYYY-MM-DD HH:MM'
+CREATE TABLE IF NOT EXISTS stays (
+  id INTEGER PRIMARY KEY,
+  checkin TEXT NOT NULL,
+  checkout TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'manual',
+  created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_stays_checkout ON stays(checkout);
 CREATE TABLE IF NOT EXISTS push_subs (
   endpoint TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

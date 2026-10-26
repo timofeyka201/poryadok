@@ -65,6 +65,12 @@ export function seedDemoData() {
   createCleaning({ date: d(7), start_time: '11:00', end_time: '14:00', source: 'ical', note: 'В этот же день заезд новых гостей — уборка срочная' });
   createCleaning({ date: d(10), start_time: '11:00', type: 'general', cleaner_id: anna });
 
+  // проживания гостей между уборками: заезд в 14:00, выезд в 11:00 в день уборки
+  const days = [-12, -10, -6, -4, -2, 0, 2, 3, 5, 7, 10];
+  for (let i = 1; i < days.length; i++) {
+    run("INSERT INTO stays(checkin, checkout, source) VALUES(?, ?, 'ical')", `${d(days[i - 1])} 14:00`, `${d(days[i])} 11:00`);
+  }
+
   run('INSERT INTO purchases(title, note, created_by) VALUES(?,?,?)', 'Средство для стёкол', '2 шт', anna);
   run('INSERT INTO purchases(title, created_by) VALUES(?,?)', 'Мусорные пакеты', maria);
   run('INSERT INTO purchases(title, note, created_by) VALUES(?,?,?)', 'Капсулы для кофемашины', 'Nespresso', chief);
