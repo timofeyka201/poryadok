@@ -200,11 +200,12 @@ api.post('/cleanings/:id/start', (req, res) => {
 api.post('/cleanings/:id/finish', (req, res) => {
   const c = ownCleaning(req);
   if (c.status !== 'in_progress') fail(400, 'Сначала начните уборку');
-  if (c.done_items < c.total_items) fail(400, 'Отметьте все пункты чек-листа');
   const comment = req.body.comment !== undefined ? String(req.body.comment).trim() || null : c.comment;
   run("UPDATE cleanings SET status = 'done', finished_at = ?, comment = ? WHERE id = ?", nowStr(), comment, c.id);
+  const missed = c.total_items - c.done_items;
   notify(chiefIds(), `${req.user.name} закончила уборку`,
-    `${describe(c)} · видео: ${c.videos}${comment ? ' · есть комментарий' : ''}`, `#/cleaning/${c.id}`);
+    `${describe(c)} · чек-лист ${missed ? `${c.done_items} из ${c.total_items} — не выполнено: ${missed}` : 'выполнен полностью'}`
+    + ` · видео: ${c.videos}${comment ? ' · есть комментарий' : ''}`, `#/cleaning/${c.id}`);
   res.json({ ok: true });
 });
 
@@ -257,6 +258,9 @@ api.get('/purchases', (req, res) => {
 api.post('/purchases', (req, res) => {
   const title = String(req.body.title || '').trim();
   if (!title) fail(400, 'Что нужно купить?');
+  const same = (s) => s.toLowerCase().replace(/ё/g, 'е').replace(/\s+/g, ' ');
+  const dup = all("SELECT title FROM purchases WHERE status = 'needed'").find((p) => same(p.title) === same(title));
+  if (dup) fail(400, `«${dup.title}» уже есть в списке`);
   const r = run('INSERT INTO purchases(title, note, created_by, cleaning_id) VALUES(?,?,?,?)',
     title, String(req.body.note || '').trim() || null, req.user.id, req.body.cleaning_id || null);
   const others = [...cleanerIds(), ...chiefIds()].filter((id) => id !== req.user.id);

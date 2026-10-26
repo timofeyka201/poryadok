@@ -2,7 +2,7 @@ import {
   h, icon, api, post, state, isChief, section, row, statusPill, dayLabel, fullDate, timeRange, TYPE, money,
   emptyState, progressBar, todayYmd, addDays, act, plural, sheet, field, toast,
 } from '../core.js';
-import { cleaningRow, cleaningEditor, assignSheet, pushBanner, apartmentCard, problemSheet, addPurchaseSheet } from './shared.js';
+import { cleaningRow, reportRow, cleaningEditor, assignSheet, pushBanner, apartmentCard, problemSheet, addPurchaseSheet } from './shared.js';
 import { refresh, refreshSummary } from '../app.js';
 
 export async function homeView() {
@@ -144,14 +144,7 @@ async function chiefHome() {
         h('div.group', upcoming.map((c) => cleaningRow(c, { showDate: true })))),
 
       reports.length > 0 && section('Последние отчёты', null,
-        h('div.group', reports.map((c) => row({
-          icon: c.videos ? 'video' : 'checklist',
-          iconBg: 'var(--green)',
-          title: `${dayLabel(c.date)} · ${c.cleaner_name || ''}`,
-          sub: `${TYPE[c.type]} · ${c.videos ? `${c.videos} ${plural(c.videos, 'видео', 'видео', 'видео')}` : 'без видео'}${c.comment ? ' · есть комментарий' : ''}`,
-          chevron: true,
-          onclick: () => (location.hash = `#/cleaning/${c.id}`),
-        })))),
+        h('div.group', reports.map((c) => reportRow(c, { showDate: true })))),
     ],
   };
 }

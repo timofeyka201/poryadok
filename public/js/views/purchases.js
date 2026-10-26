@@ -2,6 +2,7 @@ import {
   h, icon, api, post, state, isChief, clear, segmented, emptyState, ago, money, shortDate, act, actionSheet, toast,
 } from '../core.js';
 import { boughtSheet } from './shared.js';
+import { attachSuggest } from '../suggest.js';
 import { refreshSummary } from '../app.js';
 
 let tab = 'needed';
@@ -21,12 +22,16 @@ export async function purchasesView() {
     onsubmit: async (e) => {
       e.preventDefault();
       if (!input.value.trim()) return input.focus();
-      await act(addBtn, () => post('/purchases', { title: input.value }), 'Добавлено — все увидят');
+      suggestBox.classList.add('hidden');
+      try { await act(addBtn, () => post('/purchases', { title: input.value }), 'Добавлено — все увидят'); }
+      catch { return; }
       input.value = '';
       refreshSummary();
       if (tab === 'needed') load();
     },
   }, input, addBtn);
+  // выбор подсказки сразу добавляет пункт
+  const suggestBox = attachSuggest(input, { onPick: () => addForm.requestSubmit() });
 
   function neededList(items) {
     if (!items.length) return h('div.card', emptyState('cart', 'Всё есть. Если что-то заканчивается — добавьте сюда, и другие увидят.'));
@@ -80,6 +85,7 @@ export async function purchasesView() {
     subtitle: 'Общий список для всех уборщиц',
     content: [
       addForm,
+      suggestBox,
       segmented([['needed', `Нужно купить${state.summary.purchases ? ' · ' + state.summary.purchases : ''}`], ['bought', 'Куплено']], tab, (v) => { tab = v; load(); }),
       listEl,
     ],

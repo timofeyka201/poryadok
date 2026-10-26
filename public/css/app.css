@@ -318,3 +318,11 @@ button.row:active, .row.tappable:active { background: #EDEDF0; }
   .sheet { border-radius: 20px; margin-bottom: 24px; max-height: 86vh; }
   .backdrop { align-items: center; }
 }
+
+/* ---------- подсказки при вводе ---------- */
+.suggest { background: var(--card); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; margin: -8px 0 16px; animation: fade .15s ease; }
+.suggest button { display: flex; align-items: center; gap: 12px; width: 100%; padding: 12px 16px; font-size: 16px; text-align: left; position: relative; }
+.suggest button + button::before { content: ''; position: absolute; top: 0; right: 0; left: 46px; height: .5px; background: var(--sep); }
+.suggest button:active { background: #EDEDF0; }
+.suggest svg.i { width: 18px; height: 18px; color: var(--accent); }
+.sheet .suggest { margin: -6px 0 14px; }

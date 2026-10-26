@@ -56,6 +56,7 @@ export async function moreView() {
     content: [
       h('div.section', h('div.group',
         row({ icon: 'wallet', iconBg: 'var(--green)', title: 'Выплаты уборщицам', value: money(unpaid), chevron: true, onclick: () => (location.hash = '#/money') }),
+        row({ icon: 'clock', iconBg: 'var(--accent)', title: 'История уборок', chevron: true, onclick: () => (location.hash = '#/history') }),
         row({ icon: 'users', iconBg: 'var(--blue)', title: 'Команда', value: state.users.filter((u) => u.role === 'cleaner' && u.active).length, chevron: true, onclick: () => (location.hash = '#/team') }))),
       section('Настройки', null, h('div.group',
         row({ icon: 'checklist', title: 'Чек-листы уборки', chevron: true, onclick: () => (location.hash = '#/templates') }),
@@ -191,7 +192,7 @@ export async function templatesView() {
     title: 'Чек-листы',
     back: '#/more',
     large: true,
-    subtitle: 'Уборщица не сможет завершить уборку, пока не отметит все пункты',
+    subtitle: 'Если уборщица завершит уборку с неотмеченными пунктами, вы увидите это в отчёте',
     content: [
       segmented([['regular', 'Обычная уборка'], ['general', 'Генеральная']], tplTab, (v) => { tplTab = v; draw(); }),
       body,

@@ -68,7 +68,6 @@ export async function cleaningView({ id }) {
     counter.textContent = `${done} из ${total}`;
     bar.firstChild.style.width = `${total ? (done / total) * 100 : 0}%`;
     bar.classList.toggle('green', done === total);
-    finishBtn.disabled = done < total;
     finishHint.textContent = done < total ? `Осталось отметить ${total - done} ${plural(total - done, 'пункт', 'пункта', 'пунктов')}` : 'Всё готово! Не забудьте видео-отчёт';
   };
 
@@ -100,6 +99,9 @@ export async function cleaningView({ id }) {
   const checklist = section('Чек-лист', counter,
     h('div', { style: { margin: '0 4px 14px' } }, bar),
     mine && ['assigned', 'accepted'].includes(c.status) && h('div.note-box', { style: { marginBottom: '14px' } }, 'Нажмите «Начать уборку», чтобы отмечать пункты.'),
+    c.status === 'done' && done < total && h('div.note-box.warn', { style: { marginBottom: '14px' } },
+      h('b', `Не выполнено: ${total - done} ${plural(total - done, 'пункт', 'пункта', 'пунктов')}`),
+      h('div.small', { style: { marginTop: '4px' } }, c.checklist.filter((i) => !i.done).map((i) => `• ${i.text}`).join('\n'))),
     sections.map((s, i) => h('div', { style: { marginTop: i ? '18px' : 0 } },
       h('div.section-caption', s.name),
       h('div.group', s.items.map(checkEl)))));
@@ -157,7 +159,12 @@ export async function cleaningView({ id }) {
   const finishBlock = canCheck && h('div.section', h('div.card', finishBtn, finishHint));
 
   async function finish() {
-    if (!videos.length && !(await confirmAction('Видео-отчёт не загружен', 'Завершить без видео', { message: 'Шефу будет проще принять уборку, если есть видео' }))) return;
+    const missed = total - done;
+    const warnings = [
+      missed && `Не отмечено ${missed} ${plural(missed, 'пункт', 'пункта', 'пунктов')} чек-листа — шеф это увидит.`,
+      !videos.length && 'Видео-отчёт не загружен.',
+    ].filter(Boolean);
+    if (warnings.length && !(await confirmAction('Завершить уборку?', 'Завершить всё равно', { message: warnings.join(' ') }))) return;
     await act(finishBtn, async () => {
       await post(`/cleanings/${c.id}/finish`, { comment: comment.value });
       reload();

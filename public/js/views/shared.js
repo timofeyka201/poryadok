@@ -1,9 +1,10 @@
 // Компоненты, которые используются на нескольких экранах.
 import {
   h, icon, api, post, upload, state, isChief, sheet, toast, field, segmented, statusPill, dayLabel, TYPE, cleaners,
-  todayYmd, clear, progressBar,
+  todayYmd, clear, progressBar, row, money,
 } from '../core.js';
 import { pushState, subscribePush, isIos, isStandalone, refreshSummary } from '../app.js';
+import { attachSuggest } from '../suggest.js';
 
 export function cleaningRow(c, { showDate = false } = {}) {
   const chief = isChief();
@@ -18,6 +19,26 @@ export function cleaningRow(c, { showDate = false } = {}) {
       h('div', { style: { marginTop: '5px' } },
         statusPill(c))),
     h('span.row-chev', icon('chevR')));
+}
+
+/** Строка завершённой уборки для отчётов и истории: чек-лист, видео, комментарий. */
+export function reportRow(c, { showDate = false, showPay = false } = {}) {
+  const missed = c.total_items - c.done_items;
+  const parts = [
+    TYPE[c.type],
+    missed ? `чек-лист ${c.done_items}/${c.total_items}` : 'чек-лист полностью',
+    c.videos ? `видео: ${c.videos}` : 'без видео',
+    c.comment && 'есть комментарий',
+  ].filter(Boolean);
+  return row({
+    icon: c.videos ? 'video' : 'checklist',
+    iconBg: missed ? 'var(--orange)' : 'var(--green)',
+    title: showDate ? `${dayLabel(c.date)} · ${c.cleaner_name || ''}` : c.cleaner_name || 'Без уборщицы',
+    sub: parts.join(' · '),
+    value: showPay ? money(c.pay_amount) : null,
+    chevron: true,
+    onclick: () => (location.hash = `#/cleaning/${c.id}`),
+  });
 }
 
 /** Создание или изменение уборки (шеф). */
@@ -153,7 +174,7 @@ export function addPurchaseSheet({ cleaningId } = {}) {
   return sheet({
     title: 'Нужно докупить',
     doneText: 'Добавить',
-    build: () => h('div', field('Что купить', title), field('Комментарий', note),
+    build: () => h('div', field('Что купить', title), attachSuggest(title, { onPick: () => note.focus() }), field('Комментарий', note),
       h('div.section-foot', { style: { margin: '0 4px' } }, 'Пункт увидят все уборщицы и шеф.')),
     onDone: async () => {
       if (!title.value.trim()) throw new Error('Что нужно купить?');

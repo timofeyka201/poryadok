@@ -6,6 +6,7 @@ import { cleaningView } from './views/cleaning.js';
 import { purchasesView } from './views/purchases.js';
 import { problemsView } from './views/problems.js';
 import { moneyView } from './views/money.js';
+import { historyView } from './views/history.js';
 import { moreView, profileView, teamView, templatesView, settingsView, bookingsView } from './views/more.js';
 
 const routes = [
@@ -15,6 +16,7 @@ const routes = [
   ['/purchases', purchasesView],
   ['/problems', problemsView],
   ['/money', moneyView],
+  ['/history', historyView],
   ['/more', moreView],
   ['/profile', profileView],
   ['/team', teamView],
