@@ -117,12 +117,14 @@ systemctl restart poryadok
 systemctl start poryadok-update.timer
 
 # --- HTTPS ---
-if [ -z "$DOMAIN" ]; then
-  IP=$(curl -4fsS --max-time 5 https://api.ipify.org || hostname -I | awk '{print $1}')
-  DOMAIN="${IP//./-}.sslip.io"   # бесплатный адрес, пока нет своего домена
-fi
+# Технический адрес вида 1-2-3-4.sslip.io работает всегда — и без своего домена,
+# и как запасной (например, если провайдер блокирует домен)
+IP=$(curl -4fsS --max-time 5 https://api.ipify.org || hostname -I | awk '{print $1}')
+SSLIP="${IP//./-}.sslip.io"
+SITES="$SSLIP"
+[ -n "$DOMAIN" ] && SITES="$DOMAIN, $SSLIP"
 cat > /etc/caddy/Caddyfile <<CADDY
-$DOMAIN {
+$SITES {
 	request_body {
 		max_size 4GB
 	}
@@ -148,4 +150,5 @@ if [ "$code" != "401" ]; then
   exit 1
 fi
 git -C "$APP" rev-parse HEAD > "$CONF/installed-commit"
-echo "✓ «Порядок» работает: https://$DOMAIN  (версия $(git -C "$APP" log -1 --format='%h %s'))"
+echo "  Запасной адрес: https://$SSLIP"
+echo "✓ «Порядок» работает: https://${DOMAIN:-$SSLIP}  (версия $(git -C "$APP" log -1 --format='%h %s'))"
