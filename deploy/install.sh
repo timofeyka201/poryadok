@@ -50,9 +50,22 @@ mkdir -p "$DATA"
 chown -R poryadok:poryadok "$DATA"
 [ -f "$CONF/accounts.json" ] && chown poryadok:poryadok "$CONF/accounts.json" && chmod 600 "$CONF/accounts.json"
 
-echo "→ Устанавливаю зависимости"
-npm ci --omit=dev --no-audit --no-fund --loglevel=error \
-  || npm ci --omit=dev --no-audit --no-fund --loglevel=error --registry=https://registry.npmmirror.com
+# зависимости ставим, только если они изменились: меньше зависимость от сети при обновлениях
+LOCK_HASH=$(sha256sum package-lock.json | cut -d' ' -f1)
+if [ -d node_modules/express ] && [ "$(cat "$CONF/deps-hash" 2>/dev/null)" = "$LOCK_HASH" ]; then
+  echo "→ Зависимости не изменились"
+else
+  echo "→ Устанавливаю зависимости"
+  ok=0
+  for registry in https://registry.npmjs.org https://registry.npmmirror.com; do
+    for attempt in 1 2; do
+      if npm ci --omit=dev --no-audit --no-fund --loglevel=error --registry="$registry"; then ok=1; break 2; fi
+      sleep 5
+    done
+  done
+  [ "$ok" = 1 ] || { echo "✗ Не удалось скачать зависимости (нет связи с npm). Повторю при следующей проверке."; exit 1; }
+  echo "$LOCK_HASH" > "$CONF/deps-hash"
+fi
 
 # --- службы: приложение и автообновление с GitHub раз в минуту ---
 cat > /etc/systemd/system/poryadok.service <<UNIT
@@ -134,4 +147,5 @@ if [ "$code" != "401" ]; then
   journalctl -u poryadok -n 40 --no-pager
   exit 1
 fi
+git -C "$APP" rev-parse HEAD > "$CONF/installed-commit"
 echo "✓ «Порядок» работает: https://$DOMAIN  (версия $(git -C "$APP" log -1 --format='%h %s'))"
