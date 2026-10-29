@@ -39,6 +39,7 @@
 - `/etc/poryadok/accounts.json` — стартовые аккаунты (создаются при первом запуске; потом пароли меняются в приложении, файл можно удалить);
 - `/etc/poryadok/env` — настройки сервера, например `DOMAIN=uborka.ru`;
 - службы: `poryadok` (приложение), `poryadok-update.timer` (автообновление), `caddy` (HTTPS).
+- сайт в Caddy — `/etc/caddy/sites/poryadok.caddy`; главный `/etc/caddy/Caddyfile` только подключает все сайты из `/etc/caddy/sites/` (на сервере есть и другие проекты, поэтому Caddyfile целиком не перезаписывайте).
 
 Первая установка на чистый Ubuntu 22.04/24.04 (от root): создать `/etc/poryadok/accounts.json` по образцу `config/accounts.example.json` и запустить `deploy/bootstrap.sh` (его можно вставить в терминал целиком). Скрипт дождётся появления кода в репозитории, установит Node.js 22 и Caddy, настроит службы и выведет адрес сайта.
 

@@ -123,7 +123,11 @@ IP=$(curl -4fsS --max-time 5 https://api.ipify.org || hostname -I | awk '{print 
 SSLIP="${IP//./-}.sslip.io"
 SITES="$SSLIP"
 [ -n "$DOMAIN" ] && SITES="$DOMAIN, $SSLIP"
-cat > /etc/caddy/Caddyfile <<CADDY
+# Каждый проект на сервере хранит свой сайт в отдельном файле /etc/caddy/sites/*.caddy,
+# а главный Caddyfile только подключает их — так проекты не перезаписывают настройки друг друга
+mkdir -p /etc/caddy/sites
+cat > /etc/caddy/sites/poryadok.caddy <<CADDY
+# «Порядок» (создано deploy/install.sh — правки здесь перезапишутся)
 $SITES {
 	request_body {
 		max_size 4GB
@@ -131,6 +135,7 @@ $SITES {
 	reverse_proxy localhost:3000
 }
 CADDY
+echo 'import /etc/caddy/sites/*.caddy' > /etc/caddy/Caddyfile
 if command -v ufw >/dev/null && ufw status | grep -q "Status: active"; then
   ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null
 fi
