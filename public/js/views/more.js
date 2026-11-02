@@ -205,7 +205,7 @@ export async function templatesView() {
         }))
         .filter((sec) => sec.items.length);
     }
-    await act(saveBtn, () => api('/settings', { method: 'PUT', body: { templates } }), 'Сохранено. Применится к новым уборкам');
+    await act(saveBtn, () => api('/settings', { method: 'PUT', body: { templates } }), 'Сохранено. Обновлены все незавершённые уборки');
     dirty = false;
     draw();
   }
