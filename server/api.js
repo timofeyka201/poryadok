@@ -8,7 +8,7 @@ import {
 } from './db.js';
 import { login, logout, requireAuth, requireChief } from './auth.js';
 import { notify, notifyMerged, chiefIds, cleanerIds, saveSubscription, vapidPublicKey } from './notify.js';
-import { createCleaning, fillChecklist, describe, ruDate, TYPE_LABEL } from './cleanings.js';
+import { createCleaning, fillChecklist, syncOpenChecklists, describe, ruDate, TYPE_LABEL } from './cleanings.js';
 import { syncIcal } from './ical.js';
 
 export const api = express.Router();
@@ -594,9 +594,12 @@ api.get('/settings', requireChief, (req, res) => {
 });
 
 api.put('/settings', requireChief, (req, res) => {
-  for (const k of SETTINGS_KEYS) {
-    if (k !== 'ical_status' && req.body[k] !== undefined) setSetting(k, req.body[k]);
-  }
+  tx(() => {
+    for (const k of SETTINGS_KEYS) {
+      if (k !== 'ical_status' && req.body[k] !== undefined) setSetting(k, req.body[k]);
+    }
+    if (req.body.templates !== undefined) syncOpenChecklists();
+  });
   res.json({ ok: true });
 });
 
