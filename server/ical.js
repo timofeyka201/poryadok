@@ -1,6 +1,6 @@
 // Синхронизация бронирований с площадок (Авито, Суточно.ру, Airbnb, Booking…) по iCal-ссылке.
 // После каждого выезда гостя создаётся уборка «Не назначена» — шефу остаётся выбрать уборщицу.
-import { all, get, run, getSetting, setSetting, today, nowStr, tx } from './db.js';
+import { all, get, run, getSetting, setSetting, today, nowStr, tx, currentDb } from './db.js';
 import { createCleaning, describe } from './cleanings.js';
 import { notify, chiefIds } from './notify.js';
 
@@ -44,7 +44,18 @@ export function parseIcal(text) {
 // Блокировки дат хозяином — не бронь, уборка после них не нужна
 const isBlock = (e) => /not available|недоступ|blocked|закрыт/i.test(e.summary || '');
 
-export async function syncIcal() {
+const pending = "('unassigned','assigned','accepted','declined')";
+const syncing = new WeakMap();
+
+export function syncIcal() {
+  const db = currentDb();
+  if (!syncing.has(db)) {
+    syncing.set(db, syncFeeds().finally(() => syncing.delete(db)));
+  }
+  return syncing.get(db);
+}
+
+async function syncFeeds() {
   const feeds = getSetting('ical').filter((f) => f.url);
   if (!feeds.length) return { ok: true, created: 0, message: 'Ссылки не добавлены' };
 
@@ -54,7 +65,12 @@ export async function syncIcal() {
     try {
       const res = await fetch(f.url, { signal: AbortSignal.timeout(20000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      for (const e of parseIcal(await res.text())) {
+      const calendar = await res.text();
+      const lines = unfold(calendar.trim());
+      if (lines[0] !== 'BEGIN:VCALENDAR' || lines.at(-1) !== 'END:VCALENDAR') {
+        throw new Error('Ответ не содержит календарь iCal');
+      }
+      for (const e of parseIcal(calendar)) {
         if (!isBlock(e)) events.push({ ...e, uid: `${f.name}:${e.uid}` });
       }
     } catch (err) {
@@ -70,31 +86,53 @@ export async function syncIcal() {
   let cancelled = 0;
 
   tx(() => {
+    const datesByUid = new Map(events.map((e) => [e.uid, e.end]));
+    const linkedCleanings = new Set(all('SELECT DISTINCT cleaning_id FROM ical_links').map((link) => link.cleaning_id));
+    const bookingsByDate = new Map();
     for (const e of events) {
       if (e.end < t) continue;
-      const link = get('SELECT cleaning_id FROM ical_links WHERE uid = ?', e.uid);
-      const sameDayCheckin = checkinDays.has(e.end);
-      if (link) {
-        // бронь могли перенести — двигаем уборку, если её ещё не начали
-        const c = get('SELECT * FROM cleanings WHERE id = ?', link.cleaning_id);
-        if (c && c.date !== e.end && ['unassigned', 'assigned', 'accepted', 'declined'].includes(c.status)) {
-          run('UPDATE cleanings SET date = ?, end_time = ?, next_checkin = ? WHERE id = ?',
-            e.end, sameDayCheckin ? checkin : null, nextCheckin(e.end), c.id);
-          if (c.cleaner_id) notify(c.cleaner_id, 'Уборка перенесена', `Новая дата: ${describe({ ...c, date: e.end })}`, `#/cleaning/${c.id}`);
+      const linked = get(`SELECT c.* FROM cleanings c JOIN ical_links l ON l.cleaning_id = c.id WHERE l.uid = ?`, e.uid);
+      if (linked?.status === 'cancelled' && linked.cancelled_manually && linked.date === e.end) continue;
+      if (!bookingsByDate.has(e.end)) bookingsByDate.set(e.end, []);
+      bookingsByDate.get(e.end).push({ uid: e.uid, linked });
+    }
+
+    for (const [date, bookings] of bookingsByDate) {
+      const sameDayCheckin = checkinDays.has(date);
+      // Выезд может присутствовать в нескольких лентах. Учитываем только уборку на нужную дату.
+      let c = get(`SELECT * FROM cleanings WHERE date = ?
+        AND (status IN ('unassigned','assigned','accepted','declined','in_progress')
+          OR (status = 'done' AND finished_at >= ?))
+        ORDER BY CASE status WHEN 'done' THEN 2 WHEN 'unassigned' THEN 1 ELSE 0 END, id LIMIT 1`,
+      date, `${date} ${checkout}`);
+
+      if (!c) {
+        // Переносим ещё не начатую уборку, если она не нужна для другого выезда.
+        for (const { linked } of bookings) {
+          if (!linked || linked.source !== 'ical') continue;
+          const movable = get(`SELECT * FROM cleanings WHERE id = ? AND status IN ${pending}`, linked.id);
+          if (!movable) continue;
+          const aliases = all('SELECT uid FROM ical_links WHERE cleaning_id = ?', movable.id);
+          if (aliases.some(({ uid }) => datesByUid.has(uid) ? datesByUid.get(uid) !== date : errors.length > 0)) continue;
+          run('UPDATE cleanings SET date = ?, end_time = ?, next_checkin = ?, reminded = 0 WHERE id = ?',
+            date, sameDayCheckin ? checkin : null, nextCheckin(date), movable.id);
+          c = { ...movable, date };
+          if (c.cleaner_id) notify(c.cleaner_id, 'Уборка перенесена', `Новая дата: ${describe(c)}`, `#/cleaning/${c.id}`);
+          break;
         }
-        continue;
       }
-      // одна и та же бронь может прийти с нескольких площадок — не дублируем уборку
-      let c = get("SELECT * FROM cleanings WHERE date = ? AND status != 'cancelled' ORDER BY id LIMIT 1", e.end);
       if (!c) {
         c = createCleaning({
-          date: e.end, start_time: checkout, end_time: sameDayCheckin ? checkin : null,
-          source: 'ical', next_checkin: nextCheckin(e.end),
+          date, start_time: checkout, end_time: sameDayCheckin ? checkin : null,
+          source: 'ical', next_checkin: nextCheckin(date),
           note: sameDayCheckin ? 'В этот же день заезд новых гостей — уборка срочная' : null,
         });
         created++;
       }
-      run('INSERT OR IGNORE INTO ical_links(uid, cleaning_id) VALUES(?, ?)', e.uid, c.id);
+      for (const { uid } of bookings) {
+        run(`INSERT INTO ical_links(uid, cleaning_id) VALUES(?, ?)
+          ON CONFLICT(uid) DO UPDATE SET cleaning_id = excluded.cleaning_id`, uid, c.id);
+      }
     }
 
     // отменённые брони: удаляем уборку, только если все ленты загрузились без ошибок
@@ -108,13 +146,12 @@ export async function syncIcal() {
         run("INSERT INTO stays(checkin, checkout, source) VALUES(?, ?, 'ical')", `${e.start} ${checkin}`, `${e.end} ${checkout}`);
       }
 
-      const present = new Set(events.map((e) => e.uid));
       const future = all(`SELECT * FROM cleanings WHERE source = 'ical' AND date >= ?
-                          AND status IN ('unassigned','assigned','accepted','declined')`, t);
+                          AND status IN ${pending}`, t);
       for (const c of future) {
         const uids = all('SELECT uid FROM ical_links WHERE cleaning_id = ?', c.id).map((r) => r.uid);
-        if (uids.length && !uids.some((u) => present.has(u))) {
-          run("UPDATE cleanings SET status = 'cancelled' WHERE id = ?", c.id);
+        if (linkedCleanings.has(c.id) && !uids.some((u) => datesByUid.get(u) === c.date)) {
+          run("UPDATE cleanings SET status = 'cancelled', cancelled_manually = 0 WHERE id = ?", c.id);
           if (c.cleaner_id) notify(c.cleaner_id, 'Уборка отменена', `${describe(c)} — бронь отменили`, `#/cleaning/${c.id}`);
           cancelled++;
         }
