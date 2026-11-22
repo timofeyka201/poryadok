@@ -160,7 +160,6 @@ const MIGRATIONS = [
   ['cleanings', 'inspection', 'TEXT'], // осмотр после гостей: ok | issues
   ['cleanings', 'inspection_at', 'TEXT'],
   ['cleanings', 'rating', 'INTEGER'], // оценка шефа 1–5
-  ['cleanings', 'cancelled_manually', 'INTEGER NOT NULL DEFAULT 0'],
 ];
 
 export function createSchema(db) {

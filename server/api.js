@@ -186,9 +186,6 @@ api.get('/apartment-status', requireChief, (req, res) => {
   if (today_) return out('stay', { stay: { checkout: `${t} ${today_.start_time}` }, cleaning: today_ });
 
   const nextStay = get('SELECT * FROM stays WHERE checkin > ? ORDER BY checkin LIMIT 1', now) || null;
-  const sync = getSetting('ical_status');
-  const stale = !sync?.ok || sync.at < get("SELECT datetime('now', 'localtime', '-65 minutes') AS cutoff").cutoff;
-  if (stale && getSetting('ical').some((feed) => feed.url)) return out('unknown');
   out('ready', { next: pendingFrom(t), nextStay });
 });
 
@@ -264,7 +261,7 @@ api.patch('/cleanings/:id', requireChief, (req, res) => {
 api.post('/cleanings/:id/cancel', requireChief, (req, res) => {
   const c = loadCleaning(req, req.params.id);
   if (c.status === 'done') fail(400, 'Уборка уже завершена');
-  run("UPDATE cleanings SET status = 'cancelled', cancelled_manually = 1 WHERE id = ?", c.id);
+  run("UPDATE cleanings SET status = 'cancelled' WHERE id = ?", c.id);
   if (c.cleaner_id) notify(c.cleaner_id, 'Уборка отменена', describe(c), `#/cleaning/${c.id}`);
   res.json({ ok: true });
 });
