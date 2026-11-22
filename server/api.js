@@ -81,12 +81,32 @@ api.get('/summary', (req, res) => {
 });
 
 // ================= cleanings =================
+const CLEANING_DAY = `CASE WHEN c.status = 'done'
+  THEN COALESCE(substr(c.started_at, 1, 10), substr(c.finished_at, 1, 10), c.date)
+  ELSE c.date END`;
+const LEGACY_ICAL_NOTE = 'В этот же день заезд новых гостей — уборка срочная';
 const CLEANING_SELECT = `
-  SELECT c.*, u.name AS cleaner_name, u.color AS cleaner_color,
+  SELECT c.*, ${CLEANING_DAY} AS work_date, u.name AS cleaner_name, u.color AS cleaner_color,
     (SELECT COUNT(*) FROM checklist_items WHERE cleaning_id = c.id) AS total_items,
     (SELECT COUNT(*) FROM checklist_items WHERE cleaning_id = c.id AND done = 1) AS done_items,
     (SELECT COUNT(*) FROM media WHERE owner_type = 'cleaning' AND owner_id = c.id AND kind = 'video') AS videos
   FROM cleanings c LEFT JOIN users u ON u.id = c.cleaner_id`;
+
+function withBookingSchedule(c) {
+  if (!c) return c;
+  const { work_date, ...cleaning } = c;
+  const { checkin } = get('SELECT MIN(checkin) AS checkin FROM stays WHERE checkin >= ?', work_date);
+  const sameDay = checkin?.slice(0, 10) === work_date;
+  return {
+    ...cleaning,
+    scheduled_date: c.date,
+    date: work_date,
+    next_checkin: checkin?.slice(0, 10) ?? null,
+    next_checkin_time: checkin?.slice(11, 16) ?? null,
+    end_time: c.source === 'ical' ? (sameDay ? checkin.slice(11, 16) : null) : c.end_time,
+    note: c.source === 'ical' && c.note === LEGACY_ICAL_NOTE ? null : c.note,
+  };
+}
 
 function loadCleaning(req, id) {
   const c = get(`${CLEANING_SELECT} WHERE c.id = ?`, id);
@@ -97,17 +117,17 @@ function loadCleaning(req, id) {
 
 api.get('/cleanings', (req, res) => {
   const { from = '0000-00-00', to = '9999-99-99', status } = req.query;
-  const where = ['c.date BETWEEN ? AND ?'];
+  const where = [`(${CLEANING_DAY}) BETWEEN ? AND ?`];
   const params = [from, to];
   if (!isChief(req)) { where.push('c.cleaner_id = ?'); params.push(req.user.id); }
   if (status) { where.push(`c.status IN (${status.split(',').map(() => '?').join(',')})`); params.push(...status.split(',')); }
-  const rows = all(`${CLEANING_SELECT} WHERE ${where.join(' AND ')} ORDER BY c.date, c.start_time`, ...params);
+  const rows = all(`${CLEANING_SELECT} WHERE ${where.join(' AND ')} ORDER BY work_date, c.start_time`, ...params);
   if (isChief(req)) {
     for (const c of rows) {
       if (['unassigned', 'declined'].includes(c.status) && c.date >= today()) c.suggested = candidatesFor(c).find((x) => x.suggested) || null;
     }
   }
-  res.json(rows);
+  res.json(rows.map(withBookingSchedule));
 });
 
 /**
@@ -149,7 +169,7 @@ api.get('/cleanings/:id', (req, res) => {
                     WHERE cleaning_id = ? ORDER BY p.id DESC`, c.id);
   c.purchases = all(`SELECT p.*, u.name AS author FROM purchases p JOIN users u ON u.id = p.created_by
                      WHERE cleaning_id = ? ORDER BY p.id DESC`, c.id);
-  res.json(c);
+  res.json(withBookingSchedule(c));
 });
 
 // Состояние квартиры для шефа: идёт уборка / грязно / гости в квартире / готова к заселению
@@ -165,7 +185,10 @@ api.get('/apartment-status', requireChief, (req, res) => {
   const last = get(`${CLEANING_SELECT} WHERE c.status = 'done' ORDER BY c.finished_at DESC LIMIT 1`) || null;
   const manualClean = getSetting('manual_clean_at');
   const cleanedAt = [last?.finished_at, manualClean].filter(Boolean).sort().at(-1) || '';
-  const out = (state, extra = {}) => res.json({ state, last, times, manualClean, ...extra });
+  const out = (state, { cleaning, next, ...extra } = {}) => res.json({
+    state, last: withBookingSchedule(last), times, manualClean, ...extra,
+    cleaning: withBookingSchedule(cleaning), next: withBookingSchedule(next),
+  });
 
   const active = get(`${CLEANING_SELECT} WHERE c.status = 'in_progress' ORDER BY c.date LIMIT 1`);
   if (active) return out('cleaning', { cleaning: active });

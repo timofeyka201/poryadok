@@ -46,7 +46,7 @@ export function reportRow(c, { showDate = false, showPay = false } = {}) {
 export function cleaningEditor({ cleaning, date } = {}) {
   const c = cleaning || {};
   const f = {
-    date: h('input.input', { type: 'date', value: c.date || date || todayYmd(), required: true }),
+    date: h('input.input', { type: 'date', value: c.scheduled_date || c.date || date || todayYmd(), required: true }),
     start: h('input.input', { type: 'time', value: c.start_time || '11:00' }),
     end: h('input.input', { type: 'time', value: c.end_time || '' }),
     cleaner: h('select.select',
@@ -62,7 +62,7 @@ export function cleaningEditor({ cleaning, date } = {}) {
     build: () => h('div',
       segmented([['regular', 'Обычная'], ['general', 'Генеральная']], type, (v) => { type = v; }),
       field('Дата', f.date),
-      h('div.field-row', field('Начало', f.start), field('Закончить до', f.end)),
+      h('div.field-row', field('Начало', f.start), c.source !== 'ical' && field('Закончить до', f.end)),
       field('Уборщица', f.cleaner),
       field('Оплата уборщице, ₽', f.pay),
       field('Заметка для уборщицы', f.note),
@@ -71,9 +71,10 @@ export function cleaningEditor({ cleaning, date } = {}) {
     onDone: async () => {
       if (!f.date.value) throw new Error('Укажите дату');
       const body = {
-        date: f.date.value, start_time: f.start.value, end_time: f.end.value, type,
+        date: f.date.value, start_time: f.start.value, type,
         cleaner_id: f.cleaner.value ? +f.cleaner.value : null, note: f.note.value,
       };
+      if (c.source !== 'ical') body.end_time = f.end.value;
       if (f.pay.value !== '') body.pay_amount = +f.pay.value;
       if (cleaning) {
         await api(`/cleanings/${c.id}`, { method: 'PATCH', body });
