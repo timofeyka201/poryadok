@@ -170,7 +170,7 @@ async function chiefHome() {
 function apartmentStatus() {
   const card = h('div.card.tappable.apt-card', { style: { marginBottom: '6px', minHeight: '80px' } });
   let target = '#/calendar';
-  card.addEventListener('click', (e) => { if (!e.target.closest('button')) location.hash = target; });
+  card.addEventListener('click', (e) => { if (!e.target.closest('button, a')) location.hash = target; });
   // 'YYYY-MM-DD HH:MM' → «сегодня в 11:00» / «пт, 30 октября в 11:00»
   const when = (dt) => `${dayLabel(dt.slice(0, 10)).toLowerCase()} в ${dt.slice(11, 16)}`;
   const btn = (text, cls, onclick) => h(`button.btn.small.${cls}`, { style: { marginTop: '10px', marginRight: '8px' }, onclick }, text);
@@ -179,7 +179,7 @@ function apartmentStatus() {
     let s;
     try { s = await api('/apartment-status'); } catch { return; }
     const c = s.cleaning;
-    target = c ? `#/cleaning/${c.id}` : s.last ? `#/cleaning/${s.last.id}` : '#/calendar';
+    target = c ? `#/cleaning/${c.id}` : s.state === 'unknown' ? '#/bookings' : '#/calendar';
     const checkin = c?.end_time ? ` · заезд в ${c.end_time}` : '';
     const who = c ? (c.cleaner_name ? `${c.cleaner_name} — ${STATUS[c.status][0].toLowerCase()}` : 'уборщица не назначена') : 'уборка не запланирована';
     let view;
@@ -217,10 +217,12 @@ function apartmentStatus() {
         await act(null, () => post('/apartment/cleaned'), 'Отмечено');
         load();
       }));
+    } else if (s.state === 'unknown') {
+      view = ['orange', 'sync', 'Статус квартиры не подтверждён', 'Проверьте синхронизацию бронирований'];
     } else {
       view = ['green', 'check', 'Квартира готова к заселению',
         [s.manualClean && (!s.last || s.manualClean > s.last.finished_at) ? `Отмечена убранной ${ago(s.manualClean)}`
-          : s.last ? `Убрана ${ago(s.last.finished_at)} · ${s.last.cleaner_name}` : 'Уборок ещё не было',
+          : s.last ? `Последняя уборка: ${shortDate(s.last.date)} · ${s.last.cleaner_name}` : 'Уборок ещё не было',
           s.nextStay ? `следующий заезд ${when(s.nextStay.checkin)}` : s.next && `следующая уборка: ${dayLabel(s.next.date).toLowerCase()}`].filter(Boolean).join(' · ')];
       actions.push(btn('Гости заселились', 'tinted', () => checkinSheet(s).then((ok) => ok && refresh())));
     }
@@ -229,7 +231,9 @@ function apartmentStatus() {
     clear(card,
       h('div.apt-status',
         h('span.apt-icon', { style: { background: `var(--${color})` } }, icon(ic)),
-        h('div', { style: { flex: 1, minWidth: 0 } }, h('div.apt-title', title), h('div.apt-sub', sub), actions.length > 0 && h('div', actions))),
+        h('div', { style: { flex: 1, minWidth: 0 } }, h('div.apt-title', title), h('div.apt-sub', sub),
+          s.bookingSyncUncertain && s.state !== 'unknown' && h('a.small', { href: '#/bookings' }, 'Проверьте синхронизацию бронирований'),
+          actions.length > 0 && h('div', actions))),
       s.state === 'cleaning' && h('div', { style: { marginTop: '14px' } }, progressBar(c.done_items, c.total_items)));
   }
 

@@ -31,7 +31,7 @@ test('cleaning cards use actual work dates and current booking data', async (t) 
     note: 'В этот же день заезд новых гостей — уборка срочная' });
   run("UPDATE cleanings SET status = 'accepted' WHERE id = ?", upcoming.id);
   run("INSERT INTO ical_links(uid, cleaning_id) VALUES ('Test:current', ?)", upcoming.id);
-  const manual = createCleaning({ date: '2026-11-24', end_time: '13:00' });
+  const manual = createCleaning({ date: '2026-11-25', end_time: '13:00' });
 
   const feed = 'https://calendar.example/reservations.ics';
   setSetting('ical', [{ name: 'Test', url: feed }]);
@@ -75,8 +75,15 @@ test('cleaning cards use actual work dates and current booking data', async (t) 
   body = '<html>Service unavailable</html>';
   assert.equal((await request('ical/sync', 'POST')).ok, false);
   assert.equal((await request(`cleanings/${upcoming.id}`)).next_checkin, '2026-11-26');
+  assert.equal((await request('apartment-status')).bookingSyncUncertain, true);
 
   body = calendar(event('current', '20261122', '20261124'));
   await request('ical/sync', 'POST');
   assert.equal((await request(`cleanings/${upcoming.id}`)).next_checkin, null);
+  assert.equal((await request('apartment-status')).bookingSyncUncertain, false);
+
+  await request(`cleanings/${upcoming.id}/cancel`, 'POST');
+  await request('ical/sync', 'POST');
+  assert.equal((await request(`cleanings/${upcoming.id}`)).status, 'cancelled');
+  assert.deepEqual(await request('cleanings?from=2026-11-24&to=2026-11-24&status=unassigned'), []);
 });

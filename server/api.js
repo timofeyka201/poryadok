@@ -95,7 +95,8 @@ const CLEANING_SELECT = `
 function withBookingSchedule(c) {
   if (!c) return c;
   const { work_date, ...cleaning } = c;
-  const { checkin } = get('SELECT MIN(checkin) AS checkin FROM stays WHERE checkin >= ?', work_date);
+  const after = c.status === 'done' ? (c.finished_at || c.started_at || work_date).slice(0, 16) : work_date;
+  const { checkin } = get('SELECT MIN(checkin) AS checkin FROM stays WHERE checkin >= ?', after);
   const sameDay = checkin?.slice(0, 10) === work_date;
   return {
     ...cleaning,
@@ -185,8 +186,11 @@ api.get('/apartment-status', requireChief, (req, res) => {
   const last = get(`${CLEANING_SELECT} WHERE c.status = 'done' ORDER BY c.finished_at DESC LIMIT 1`) || null;
   const manualClean = getSetting('manual_clean_at');
   const cleanedAt = [last?.finished_at, manualClean].filter(Boolean).sort().at(-1) || '';
+  const sync = getSetting('ical_status');
+  const { cutoff } = get("SELECT datetime(?, '-65 minutes') AS cutoff", now);
+  const bookingSyncUncertain = getSetting('ical').some((feed) => feed.url) && (!sync?.ok || !sync.at || sync.at < cutoff);
   const out = (state, { cleaning, next, ...extra } = {}) => res.json({
-    state, last: withBookingSchedule(last), times, manualClean, ...extra,
+    state, last: withBookingSchedule(last), times, manualClean, bookingSyncUncertain, ...extra,
     cleaning: withBookingSchedule(cleaning), next: withBookingSchedule(next),
   });
 
@@ -209,6 +213,7 @@ api.get('/apartment-status', requireChief, (req, res) => {
   if (today_) return out('stay', { stay: { checkout: `${t} ${today_.start_time}` }, cleaning: today_ });
 
   const nextStay = get('SELECT * FROM stays WHERE checkin > ? ORDER BY checkin LIMIT 1', now) || null;
+  if (bookingSyncUncertain) return out('unknown');
   out('ready', { next: pendingFrom(t), nextStay });
 });
 
@@ -221,7 +226,8 @@ api.post('/stays', requireChief, (req, res) => {
     run("INSERT INTO stays(checkin, checkout, source) VALUES(?, ?, 'manual')", checkin, checkout);
     // в день выезда нужна уборка — создаём, если её ещё нет
     const date = checkout.slice(0, 10);
-    if (!get("SELECT id FROM cleanings WHERE date = ? AND status != 'cancelled'", date)) {
+    if (!get(`SELECT id FROM cleanings c WHERE (${CLEANING_DAY}) = ? AND status != 'cancelled'
+      AND (status != 'done' OR finished_at >= ?)`, date, checkout)) {
       createCleaning({ date, start_time: checkout.slice(11, 16) });
     }
   });
@@ -265,7 +271,8 @@ api.patch('/cleanings/:id', requireChief, (req, res) => {
   if (reassigned || c.status === 'cancelled') status = next.cleaner_id ? 'assigned' : 'unassigned';
   tx(() => {
     run(`UPDATE cleanings SET date=?, start_time=?, end_time=?, type=?, note=?, pay_amount=?, cleaner_id=?, status=?,
-         decline_reason = CASE WHEN ? THEN NULL ELSE decline_reason END, reminded = CASE WHEN ? THEN 0 ELSE reminded END
+         cancelled_manually = 0, decline_reason = CASE WHEN ? THEN NULL ELSE decline_reason END,
+         reminded = CASE WHEN ? THEN 0 ELSE reminded END
          WHERE id = ?`,
       next.date, next.start_time, next.end_time, next.type, next.note, next.pay_amount, next.cleaner_id, status,
       reassigned ? 1 : 0, reassigned || next.date !== c.date ? 1 : 0, c.id);
@@ -284,7 +291,8 @@ api.patch('/cleanings/:id', requireChief, (req, res) => {
 api.post('/cleanings/:id/cancel', requireChief, (req, res) => {
   const c = loadCleaning(req, req.params.id);
   if (c.status === 'done') fail(400, 'Уборка уже завершена');
-  run("UPDATE cleanings SET status = 'cancelled' WHERE id = ?", c.id);
+  if (c.status === 'cancelled') return res.json({ ok: true });
+  run("UPDATE cleanings SET status = 'cancelled', cancelled_manually = 1 WHERE id = ?", c.id);
   if (c.cleaner_id) notify(c.cleaner_id, 'Уборка отменена', describe(c), `#/cleaning/${c.id}`);
   res.json({ ok: true });
 });
