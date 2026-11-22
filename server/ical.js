@@ -54,7 +54,12 @@ export async function syncIcal() {
     try {
       const res = await fetch(f.url, { signal: AbortSignal.timeout(20000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      for (const e of parseIcal(await res.text())) {
+      const text = (await res.text()).trim();
+      const lines = unfold(text);
+      if (lines[0] !== 'BEGIN:VCALENDAR' || lines.at(-1) !== 'END:VCALENDAR') {
+        throw new Error('Ответ не содержит календарь iCal');
+      }
+      for (const e of parseIcal(text)) {
         if (!isBlock(e)) events.push({ ...e, uid: `${f.name}:${e.uid}` });
       }
     } catch (err) {
@@ -64,8 +69,6 @@ export async function syncIcal() {
 
   const t = today();
   const { checkout, checkin } = getSetting('times');
-  const checkinDays = new Set(events.map((e) => e.start));
-  const nextCheckin = (date) => events.map((e) => e.start).filter((d) => d >= date).sort()[0] || null;
   let created = 0;
   let cancelled = 0;
 
@@ -73,13 +76,11 @@ export async function syncIcal() {
     for (const e of events) {
       if (e.end < t) continue;
       const link = get('SELECT cleaning_id FROM ical_links WHERE uid = ?', e.uid);
-      const sameDayCheckin = checkinDays.has(e.end);
       if (link) {
         // бронь могли перенести — двигаем уборку, если её ещё не начали
         const c = get('SELECT * FROM cleanings WHERE id = ?', link.cleaning_id);
         if (c && c.date !== e.end && ['unassigned', 'assigned', 'accepted', 'declined'].includes(c.status)) {
-          run('UPDATE cleanings SET date = ?, end_time = ?, next_checkin = ? WHERE id = ?',
-            e.end, sameDayCheckin ? checkin : null, nextCheckin(e.end), c.id);
+          run('UPDATE cleanings SET date = ?, reminded = 0 WHERE id = ?', e.end, c.id);
           if (c.cleaner_id) notify(c.cleaner_id, 'Уборка перенесена', `Новая дата: ${describe({ ...c, date: e.end })}`, `#/cleaning/${c.id}`);
         }
         continue;
@@ -87,11 +88,7 @@ export async function syncIcal() {
       // одна и та же бронь может прийти с нескольких площадок — не дублируем уборку
       let c = get("SELECT * FROM cleanings WHERE date = ? AND status != 'cancelled' ORDER BY id LIMIT 1", e.end);
       if (!c) {
-        c = createCleaning({
-          date: e.end, start_time: checkout, end_time: sameDayCheckin ? checkin : null,
-          source: 'ical', next_checkin: nextCheckin(e.end),
-          note: sameDayCheckin ? 'В этот же день заезд новых гостей — уборка срочная' : null,
-        });
+        c = createCleaning({ date: e.end, start_time: checkout, source: 'ical' });
         created++;
       }
       run('INSERT OR IGNORE INTO ical_links(uid, cleaning_id) VALUES(?, ?)', e.uid, c.id);

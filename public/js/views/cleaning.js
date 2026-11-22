@@ -1,6 +1,6 @@
 import {
   h, icon, api, post, upload, state, isChief, section, row, statusPill, dayLabel, timeRange, TYPE, money, clear,
-  progressBar, act, toast, actionSheet, confirmAction, ago, fileSize, shortDate, timeOf, plural, avatar, compressImage,
+  progressBar, act, toast, actionSheet, confirmAction, ago, fileSize, shortDate, timeOf, plural, avatar, compressImage, fullDate,
 } from '../core.js';
 import { compressVideo, canCompressVideo, keepAwake } from '../video-compress.js';
 import { cleaningEditor, assignSheet, problemSheet, addPurchaseSheet, progressBlock, accessBox, ratingStars } from './shared.js';
@@ -24,7 +24,7 @@ export async function cleaningView({ id }) {
     h('div.meta', { style: { justifyContent: 'space-between', marginBottom: '10px' } },
       h('div.meta', statusPill(c), c.source === 'ical' && h('span.pill.gray', 'из бронирования')),
       h('span.small.muted', `${TYPE[c.type]} уборка`)),
-    h('div.hero-day', dayLabel(c.date, { long: true })),
+    h('div.hero-day', c.status === 'done' ? fullDate(c.date) : dayLabel(c.date, { long: true })),
     h('div.hero-time', timeRange(c)),
     chief && h('div', { style: { display: 'flex', alignItems: 'center', gap: '12px', marginTop: '16px', paddingTop: '14px', borderTop: '.5px solid var(--sep)' } },
       c.cleaner_id ? avatar({ name: c.cleaner_name, color: c.cleaner_color }) : h('span.avatar', { style: { background: '#C7C7CC' } }, '?'),
@@ -34,8 +34,9 @@ export async function cleaningView({ id }) {
       c.status !== 'done' && h('button.btn.tinted.small', { onclick: () => assignSheet(c).then((ok) => ok && reload()) }, c.cleaner_id ? 'Сменить' : 'Назначить')),
     h('div', { style: { marginTop: '12px' } },
       c.start_time && kv('Выезд гостей / начало', c.start_time),
-      c.end_time && kv('Заезд новых гостей', c.end_time),
-      c.next_checkin && c.next_checkin !== c.date && kv('Следующий заезд', shortDate(c.next_checkin)),
+      c.source !== 'ical' && c.end_time && kv('Закончить до', c.end_time),
+      c.next_checkin && kv('Следующий заезд', c.next_checkin === c.date && c.next_checkin_time
+        ? `${shortDate(c.next_checkin)}, ${c.next_checkin_time}` : shortDate(c.next_checkin)),
       (chief || mine) && kv('Оплата', money(c.pay_amount)),
       c.started_at && kv('Начата', `${shortDate(c.started_at)}, ${timeOf(c.started_at)}`),
       c.finished_at && kv('Завершена', `${shortDate(c.finished_at)}, ${timeOf(c.finished_at)}`),
